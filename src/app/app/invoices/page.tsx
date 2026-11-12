@@ -18,7 +18,11 @@ import {
   Trash2,
   FileSpreadsheet
 } from "lucide-react";
-import { ParsedInvoice, buildBatchTallyPurchaseXml } from "@/lib/tallyInvoiceEngine";
+import {
+  ParsedInvoice,
+  buildBatchTallyPurchaseXml,
+  buildBatchTallyLedgerMasterXml
+} from "@/lib/tallyInvoiceEngine";
 
 export default function InvoicesOCRPage() {
   // Start with completely EMPTY queue - NO dummy data!
@@ -158,6 +162,24 @@ export default function InvoicesOCRPage() {
     URL.revokeObjectURL(url);
   };
 
+  // Download Ledgers Master XML file (for Import > Masters)
+  const handleDownloadMastersXml = () => {
+    if (invoices.length === 0) return;
+    const xmlPayload = buildBatchTallyLedgerMasterXml(
+      "Apex Logistics India Pvt Ltd",
+      invoices
+    );
+    const blob = new Blob([xmlPayload], { type: "application/xml" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `Papneja_Tally_Masters_${new Date().toISOString().slice(0, 10)}.xml`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  };
+
   // Delete invoice from queue
   const handleDeleteInvoice = (id: string) => {
     setInvoices((prev) => prev.filter((inv) => inv.id !== id));
@@ -190,6 +212,9 @@ export default function InvoicesOCRPage() {
             <span className="px-2.5 py-0.5 rounded-full text-xs font-semibold bg-blue-50 text-blue-700 border border-blue-200">
               Active Client: Apex Logistics (Delhi • 07AABCA1234F1Z8)
             </span>
+            <span className="px-2.5 py-0.5 rounded-full text-xs font-semibold bg-emerald-50 text-emerald-700 border border-emerald-200">
+              ✓ Auto-Creates Missing Ledgers in Tally
+            </span>
           </div>
           <p className="text-sm text-slate-500 mt-1">
             Drag and drop real purchase bills (PDF or Images). The engine extracts GSTINs, splits Intra/Inter-state taxes, and enters the vouchers directly into Tally Prime.
@@ -206,10 +231,19 @@ export default function InvoicesOCRPage() {
                 Clear Queue
               </button>
               <button
-                onClick={handleDownloadXml}
-                className="flex items-center gap-2 px-4 py-2.5 rounded-xl border border-slate-300 text-slate-700 hover:bg-slate-50 text-sm font-semibold shadow-sm transition-all"
+                onClick={handleDownloadMastersXml}
+                title="Download Ledger Masters XML to import via Tally Prime > Import > Masters"
+                className="flex items-center gap-1.5 px-3 py-2.5 rounded-xl border border-slate-200 text-slate-600 hover:bg-slate-50 text-xs font-semibold shadow-sm transition-all"
               >
-                <Download className="w-4 h-4 text-slate-600" />
+                <Download className="w-3.5 h-3.5 text-slate-500" />
+                <span>Masters XML</span>
+              </button>
+              <button
+                onClick={handleDownloadXml}
+                title="Download Complete XML (Vouchers with Auto-Ledger Creation) to import via Tally Prime > Import > Transactions"
+                className="flex items-center gap-2 px-4 py-2.5 rounded-xl border border-emerald-300 bg-emerald-50 text-emerald-800 hover:bg-emerald-100 text-sm font-semibold shadow-sm transition-all"
+              >
+                <Download className="w-4 h-4 text-emerald-600" />
                 <span>Download Tally XML ({invoices.length})</span>
               </button>
               <button

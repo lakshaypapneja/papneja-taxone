@@ -124,15 +124,123 @@ export function determineGstLedgers(
 }
 
 /**
- * Generates an official, Tally Prime-compliant XML import envelope for multiple purchase vouchers
+ * Generates XML definition for unique Ledgers (Sundry Creditors, Purchase A/c, Tax A/c)
+ * This allows Tally Prime to automatically create missing ledgers on the fly during import!
+ */
+export function generateLedgerMastersXml(invoices: ParsedInvoice[]): string {
+  const ledgerMessages: string[] = [];
+  const seenLedgers = new Set<string>();
+
+  invoices.forEach((inv) => {
+    // 1. Vendor (Party) Ledger -> Sundry Creditors
+    const vendorName = inv.vendorName?.trim() || "Commercial Vendor";
+    if (!seenLedgers.has(vendorName)) {
+      seenLedgers.add(vendorName);
+      ledgerMessages.push(`
+        <TALLYMESSAGE xmlns:UDF="TallyUDF">
+          <LEDGER NAME="${escapeXml(vendorName)}" ACTION="Create">
+            <NAME>${escapeXml(vendorName)}</NAME>
+            <PARENT>Sundry Creditors</PARENT>
+            <ISBILLWISEON>Yes</ISBILLWISEON>
+            <AFFECTSSTOCK>No</AFFECTSSTOCK>
+            <COUNTRYNAME>India</COUNTRYNAME>
+            <LEDSTATENAME>${escapeXml(inv.supplierState)}</LEDSTATENAME>
+            <PARTYGSTIN>${escapeXml(inv.vendorGstin)}</PARTYGSTIN>
+            <GSTREGISTRATIONTYPE>Regular</GSTREGISTRATIONTYPE>
+          </LEDGER>
+        </TALLYMESSAGE>`);
+    }
+
+    // 2. Purchase Account -> Purchase Accounts
+    const purchaseLedger = inv.ledgers.purchaseLedger;
+    if (purchaseLedger && !seenLedgers.has(purchaseLedger)) {
+      seenLedgers.add(purchaseLedger);
+      ledgerMessages.push(`
+        <TALLYMESSAGE xmlns:UDF="TallyUDF">
+          <LEDGER NAME="${escapeXml(purchaseLedger)}" ACTION="Create">
+            <NAME>${escapeXml(purchaseLedger)}</NAME>
+            <PARENT>Purchase Accounts</PARENT>
+            <ISCOSTCENTRESON>No</ISCOSTCENTRESON>
+            <AFFECTSSTOCK>No</AFFECTSSTOCK>
+            <ISGSTAPPLICABLE>Applicable</ISGSTAPPLICABLE>
+          </LEDGER>
+        </TALLYMESSAGE>`);
+    }
+
+    // 3. Tax Ledgers -> Duties & Taxes
+    if (inv.isInterstate && inv.ledgers.igstLedger && !seenLedgers.has(inv.ledgers.igstLedger)) {
+      seenLedgers.add(inv.ledgers.igstLedger);
+      ledgerMessages.push(`
+        <TALLYMESSAGE xmlns:UDF="TallyUDF">
+          <LEDGER NAME="${escapeXml(inv.ledgers.igstLedger)}" ACTION="Create">
+            <NAME>${escapeXml(inv.ledgers.igstLedger)}</NAME>
+            <PARENT>Duties &amp; Taxes</PARENT>
+            <TAXTYPE>GST</TAXTYPE>
+            <GSTDUTYHEAD>Integrated Tax</GSTDUTYHEAD>
+            <RATEOFTAXCALCULATION>${inv.taxRate}</RATEOFTAXCALCULATION>
+          </LEDGER>
+        </TALLYMESSAGE>`);
+    } else {
+      if (inv.ledgers.cgstLedger && !seenLedgers.has(inv.ledgers.cgstLedger)) {
+        seenLedgers.add(inv.ledgers.cgstLedger);
+        ledgerMessages.push(`
+        <TALLYMESSAGE xmlns:UDF="TallyUDF">
+          <LEDGER NAME="${escapeXml(inv.ledgers.cgstLedger)}" ACTION="Create">
+            <NAME>${escapeXml(inv.ledgers.cgstLedger)}</NAME>
+            <PARENT>Duties &amp; Taxes</PARENT>
+            <TAXTYPE>GST</TAXTYPE>
+            <GSTDUTYHEAD>Central Tax</GSTDUTYHEAD>
+            <RATEOFTAXCALCULATION>${inv.taxRate / 2}</RATEOFTAXCALCULATION>
+          </LEDGER>
+        </TALLYMESSAGE>`);
+      }
+      if (inv.ledgers.sgstLedger && !seenLedgers.has(inv.ledgers.sgstLedger)) {
+        seenLedgers.add(inv.ledgers.sgstLedger);
+        ledgerMessages.push(`
+        <TALLYMESSAGE xmlns:UDF="TallyUDF">
+          <LEDGER NAME="${escapeXml(inv.ledgers.sgstLedger)}" ACTION="Create">
+            <NAME>${escapeXml(inv.ledgers.sgstLedger)}</NAME>
+            <PARENT>Duties &amp; Taxes</PARENT>
+            <TAXTYPE>GST</TAXTYPE>
+            <GSTDUTYHEAD>State Tax</GSTDUTYHEAD>
+            <RATEOFTAXCALCULATION>${inv.taxRate / 2}</RATEOFTAXCALCULATION>
+          </LEDGER>
+        </TALLYMESSAGE>`);
+      }
+    }
+
+    // 4. Round Off Ledger
+    if (inv.roundOff !== 0 && !seenLedgers.has("Round Off (+/-)")) {
+      seenLedgers.add("Round Off (+/-)");
+      ledgerMessages.push(`
+        <TALLYMESSAGE xmlns:UDF="TallyUDF">
+          <LEDGER NAME="Round Off (+/-)" ACTION="Create">
+            <NAME>Round Off (+/-)</NAME>
+            <PARENT>Indirect Expenses</PARENT>
+            <ISCOSTCENTRESON>No</ISCOSTCENTRESON>
+          </LEDGER>
+        </TALLYMESSAGE>`);
+    }
+  });
+
+  return ledgerMessages.join("\n");
+}
+
+/**
+ * Generates an official, Tally Prime-compliant XML import envelope for multiple purchase vouchers.
+ * By default includes auto-creation of missing ledgers so Tally will create them automatically!
  */
 export function buildBatchTallyPurchaseXml(
   companyName: string,
-  invoices: ParsedInvoice[]
+  invoices: ParsedInvoice[],
+  autoCreateLedgers: boolean = true
 ): string {
+  // 1. Generate auto-create Ledgers if enabled
+  const ledgersXml = autoCreateLedgers ? generateLedgerMastersXml(invoices) : "";
+
+  // 2. Generate Vouchers
   const voucherMessages = invoices
     .map((inv) => {
-      // Tally date format: YYYYMMDD
       const tallyDate = (inv.invoiceDate || new Date().toISOString().slice(0, 10)).replace(/-/g, "");
       const cleanInvNo = escapeXml(inv.invoiceNo || "INV-001");
       const cleanVendor = escapeXml(inv.vendorName || "Sundry Creditor");
@@ -140,12 +248,6 @@ export function buildBatchTallyPurchaseXml(
         `Purchase Invoice #${inv.invoiceNo} dt. ${inv.invoiceDate} from ${inv.vendorName} (GSTIN: ${inv.vendorGstin})`
       );
 
-      // Build Ledger Entries:
-      // In Tally Accounting Voucher for Purchase:
-      // 1. Supplier / Party: Credited (ISDEEMEDPOSITIVE = No, Amount = positive Total)
-      // 2. Purchase Account: Debited (ISDEEMEDPOSITIVE = Yes, Amount = negative Taxable)
-      // 3. Tax Ledgers: Debited (ISDEEMEDPOSITIVE = Yes, Amount = negative Tax)
-      // 4. Round Off: Debited/Credited as required
       let ledgerEntriesXml = `
           <!-- Supplier (Credit) -->
           <ALLLEDGERENTRIES.LIST>
@@ -236,7 +338,37 @@ export function buildBatchTallyPurchaseXml(
         </STATICVARIABLES>
       </REQUESTDESC>
       <REQUESTDATA>
+        ${ledgersXml}
         ${voucherMessages}
+      </REQUESTDATA>
+    </IMPORTDATA>
+  </BODY>
+</ENVELOPE>`;
+}
+
+/**
+ * Generates pure Master XML specifically for Tally Prime "Import > Masters" menu.
+ */
+export function buildBatchTallyLedgerMasterXml(
+  companyName: string,
+  invoices: ParsedInvoice[]
+): string {
+  const ledgersXml = generateLedgerMastersXml(invoices);
+  return `<?xml version="1.0" encoding="utf-8"?>
+<ENVELOPE>
+  <HEADER>
+    <TALLYREQUEST>Import Data</TALLYREQUEST>
+  </HEADER>
+  <BODY>
+    <IMPORTDATA>
+      <REQUESTDESC>
+        <REPORTNAME>All Masters</REPORTNAME>
+        <STATICVARIABLES>
+          <SVCURRENTCOMPANY>${escapeXml(companyName)}</SVCURRENTCOMPANY>
+        </STATICVARIABLES>
+      </REQUESTDESC>
+      <REQUESTDATA>
+        ${ledgersXml}
       </REQUESTDATA>
     </IMPORTDATA>
   </BODY>
