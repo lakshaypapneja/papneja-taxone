@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { determineGstLedgers, ParsedInvoice } from "@/lib/tallyInvoiceEngine";
+import { determineGstLedgers, ParsedInvoice, InvoiceType } from "@/lib/tallyInvoiceEngine";
 import { GoogleGenAI } from "@google/genai";
 
 // Dynamic require for pdf-parse in Next.js server runtime
@@ -15,8 +15,9 @@ export async function POST(req: NextRequest) {
   try {
     const formData = await req.formData();
     const files = formData.getAll("files") as File[];
-    const buyerGstin = (formData.get("buyerGstin") as string) || "07AABCA1234F1Z8"; // Default: Delhi
-    const buyerName = (formData.get("buyerName") as string) || "Apex Logistics India Pvt Ltd";
+    const invoiceType = (formData.get("invoiceType") as InvoiceType) || "Purchase";
+    const clientGstin = (formData.get("buyerGstin") as string) || "07AABCA1234F1Z8"; // Default: Delhi
+    const clientName = (formData.get("buyerName") as string) || "Apex Logistics India Pvt Ltd";
 
     if (!files || files.length === 0) {
       return NextResponse.json(
@@ -33,23 +34,27 @@ export async function POST(req: NextRequest) {
       const fileName = file.name;
       const buffer = Buffer.from(await file.arrayBuffer());
 
-      let extracted = await extractWithRealEngines(file, buffer, apiKey);
+      let extracted = await extractWithRealEngines(file, buffer, apiKey, invoiceType);
 
       // Determine GST Ledgers & double-entry balances
+      // For Purchase: vendorGstin = Supplier, clientGstin = Buyer
+      // For Sales: vendorGstin = Customer (Party), clientGstin = Seller (Company)
       const gstDetails = determineGstLedgers(
         extracted.vendorGstin,
-        buyerGstin,
+        clientGstin,
         extracted.taxableValue,
-        extracted.taxRate
+        extracted.taxRate,
+        invoiceType
       );
 
       const parsed: ParsedInvoice = {
         id: `inv-${Date.now()}-${i}-${Math.random().toString(36).substring(2, 7)}`,
         fileName,
+        type: invoiceType,
         vendorName: extracted.vendorName,
         vendorGstin: extracted.vendorGstin,
-        buyerName,
-        buyerGstin,
+        buyerName: clientName,
+        buyerGstin: clientGstin,
         invoiceNo: extracted.invoiceNo,
         invoiceDate: extracted.invoiceDate,
         taxableValue: extracted.taxableValue,
@@ -90,7 +95,12 @@ export async function POST(req: NextRequest) {
   }
 }
 
-async function extractWithRealEngines(file: File, buffer: Buffer, apiKey: string) {
+async function extractWithRealEngines(
+  file: File,
+  buffer: Buffer,
+  apiKey: string,
+  invoiceType: InvoiceType
+) {
   const fileName = file.name;
   let rawText = "";
 
@@ -108,16 +118,22 @@ async function extractWithRealEngines(file: File, buffer: Buffer, apiKey: string
   }
 
   // 2. Call Gemini Vision / Multimodal model (gemini-3.5-flash-lite)
-  try {
-    const ai = new GoogleGenAI({ apiKey });
-    const mimeType = file.type || (fileName.toLowerCase().endsWith(".pdf") ? "application/pdf" : "image/jpeg");
-    const base64Data = buffer.toString("base64");
+  if (apiKey) {
+    try {
+      const ai = new GoogleGenAI({ apiKey });
+      const mimeType = file.type || (fileName.toLowerCase().endsWith(".pdf") ? "application/pdf" : "image/jpeg");
+      const base64Data = buffer.toString("base64");
 
-    const prompt = `You are an expert Indian GST & Tax Accounting OCR system.
+      const promptRole = invoiceType === "Sales"
+        ? "This is an Indian SALES invoice issued to a client/customer. Extract the CUSTOMER's legal name and CUSTOMER's GSTIN."
+        : "This is an Indian PURCHASE invoice received from a vendor/supplier. Extract the SUPPLIER's legal name and SUPPLIER's GSTIN.";
+
+      const prompt = `You are an expert Indian GST & Tax Accounting OCR system.
+${promptRole}
 Analyze this invoice (${fileName}) and extract these exact fields in JSON format:
 {
-  "vendorName": "Full legal name or trade name of the supplier/vendor",
-  "vendorGstin": "15-character Indian GSTIN of the supplier (e.g. 27AABCS1429B1Z2)",
+  "vendorName": "${invoiceType === "Sales" ? "Customer or Buyer company name" : "Supplier or Vendor company name"}",
+  "vendorGstin": "15-character Indian GSTIN of ${invoiceType === "Sales" ? "the customer/buyer" : "the supplier"}",
   "invoiceNo": "Invoice number / Bill number",
   "invoiceDate": "YYYY-MM-DD",
   "taxableValue": 10000.00,
@@ -129,48 +145,48 @@ ${rawText.slice(0, 3000)}
 
 Return ONLY a JSON object. Ensure taxableValue is a number.`;
 
-    const response = await ai.models.generateContent({
-      model: "gemini-3.5-flash-lite",
-      contents: [
-        {
-          role: "user",
-          parts: [
-            { text: prompt },
-            {
-              inlineData: {
-                mimeType,
-                data: base64Data,
+      const response = await ai.models.generateContent({
+        model: "gemini-3.5-flash-lite",
+        contents: [
+          {
+            role: "user",
+            parts: [
+              { text: prompt },
+              {
+                inlineData: {
+                  mimeType,
+                  data: base64Data,
+                },
               },
-            },
-          ],
-        },
-      ],
-    });
+            ],
+          },
+        ],
+      });
 
-    const responseText = response.text || "";
-    const jsonMatch = responseText.match(/\{[\s\S]*\}/);
-    if (jsonMatch) {
-      const parsed = JSON.parse(jsonMatch[0]);
-      return {
-        vendorName: parsed.vendorName?.trim() || "Supplier / Vendor",
-        vendorGstin: cleanGstin(parsed.vendorGstin) || "07AAACB2902M1ZI",
-        invoiceNo: parsed.invoiceNo?.trim() || `INV-${Date.now().toString().slice(-5)}`,
-        invoiceDate: normalizeDate(parsed.invoiceDate),
-        taxableValue: Number(parsed.taxableValue) || 10000,
-        taxRate: Number(parsed.taxRate) || 18,
-      };
+      const responseText = response.text || "";
+      const jsonMatch = responseText.match(/\{[\s\S]*\}/);
+      if (jsonMatch) {
+        const parsed = JSON.parse(jsonMatch[0]);
+        return {
+          vendorName: parsed.vendorName?.trim() || (invoiceType === "Sales" ? "Client Customer" : "Commercial Supplier"),
+          vendorGstin: cleanGstin(parsed.vendorGstin) || "07AAACB2902M1ZI",
+          invoiceNo: parsed.invoiceNo?.trim() || `${invoiceType === "Sales" ? "SALES" : "INV"}-${Date.now().toString().slice(-5)}`,
+          invoiceDate: normalizeDate(parsed.invoiceDate),
+          taxableValue: Number(parsed.taxableValue) || 10000,
+          taxRate: Number(parsed.taxRate) || 18,
+        };
+      }
+    } catch (aiErr) {
+      console.warn("Gemini multimodal extraction note:", aiErr);
     }
-  } catch (aiErr) {
-    console.warn("Gemini multimodal extraction note:", aiErr);
   }
 
-  // 3. Fallback: Parse regex from raw PDF text if Gemini had a network hiccup
+  // 3. Fallback: Parse regex from raw PDF text
   if (rawText.length > 20) {
     const gstinRegex = /\b([0-9]{2}[A-Z]{5}[0-9]{4}[A-Z]{1}[1-9A-Z]{1}Z[0-9A-Z]{1})\b/g;
     const matches = rawText.match(gstinRegex);
     const vendorGstin = matches ? matches[0] : "07AAACB2902M1ZI";
 
-    // Try finding amount
     const amountRegex = /(?:Total|Taxable|Amount|INR|Rs\.?)\s*[:]?\s*([0-9,]+\.[0-9]{2})/i;
     const amountMatch = rawText.match(amountRegex);
     let taxable = 15000;
@@ -181,18 +197,18 @@ Return ONLY a JSON object. Ensure taxableValue is a number.`;
     return {
       vendorName: fileName.replace(/\.[^/.]+$/, "").replace(/[-_]/g, " ").toUpperCase(),
       vendorGstin,
-      invoiceNo: `INV-${Math.floor(1000 + Math.random() * 9000)}`,
+      invoiceNo: `${invoiceType === "Sales" ? "SALES" : "INV"}-${Math.floor(1000 + Math.random() * 9000)}`,
       invoiceDate: new Date().toISOString().slice(0, 10),
       taxableValue: taxable,
       taxRate: 18,
     };
   }
 
-  // 4. Default clean placeholder
+  // 4. Default clean fallback
   return {
     vendorName: fileName.replace(/\.[^/.]+$/, "").replace(/[-_]/g, " ").toUpperCase(),
     vendorGstin: "07AAACB2902M1ZI",
-    invoiceNo: `BILL-${Math.floor(10000 + Math.random() * 90000)}`,
+    invoiceNo: `${invoiceType === "Sales" ? "SALES" : "BILL"}-${Math.floor(10000 + Math.random() * 90000)}`,
     invoiceDate: new Date().toISOString().slice(0, 10),
     taxableValue: 12500,
     taxRate: 18,

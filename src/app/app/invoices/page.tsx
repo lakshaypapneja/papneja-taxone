@@ -16,16 +16,23 @@ import {
   Layers,
   ArrowRight,
   Trash2,
-  FileSpreadsheet
+  FileSpreadsheet,
+  ShoppingCart,
+  TrendingUp,
+  Receipt
 } from "lucide-react";
 import {
   ParsedInvoice,
+  InvoiceType,
   buildBatchTallyPurchaseXml,
   buildBatchTallyLedgerMasterXml
 } from "@/lib/tallyInvoiceEngine";
 
 export default function InvoicesOCRPage() {
-  // Start with completely EMPTY queue - NO dummy data!
+  // Toggle between Purchase and Sales
+  const [activeTab, setActiveTab] = useState<InvoiceType>("Purchase");
+
+  // Empty initial queues
   const [invoices, setInvoices] = useState<ParsedInvoice[]>([]);
   const [isProcessing, setIsProcessing] = useState(false);
   const [isPushingToTally, setIsPushingToTally] = useState(false);
@@ -35,6 +42,18 @@ export default function InvoicesOCRPage() {
   const [pushErrorDetails, setPushErrorDetails] = useState<string | null>(null);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // Switch tab handler
+  const handleTabChange = (tab: InvoiceType) => {
+    setActiveTab(tab);
+    setPushStatusMessage(null);
+    setPushErrorDetails(null);
+  };
+
+  // Filter invoices for currently active tab
+  const currentInvoices = invoices.filter(
+    (inv) => (inv.type || "Purchase") === activeTab
+  );
 
   // Process selected file list
   const processFiles = async (fileList: FileList | File[]) => {
@@ -48,6 +67,7 @@ export default function InvoicesOCRPage() {
     for (let i = 0; i < fileList.length; i++) {
       formData.append("files", fileList[i]);
     }
+    formData.append("invoiceType", activeTab);
     formData.append("buyerGstin", "07AABCA1234F1Z8");
     formData.append("buyerName", "Apex Logistics India Pvt Ltd");
 
@@ -61,7 +81,9 @@ export default function InvoicesOCRPage() {
       if (data.success && data.invoices) {
         setInvoices((prev) => [...data.invoices, ...prev]);
         setPushStatusMessage(
-          `Successfully processed ${data.invoices.length} invoice(s)! Extracted real vendor GSTINs, calculated GST tax splits, and mapped Tally ledgers.`
+          `Successfully processed ${data.invoices.length} ${activeTab} invoice(s)! Extracted ${
+            activeTab === "Sales" ? "Customer" : "Vendor"
+          } GSTINs, calculated GST tax splits, and mapped Tally ledgers.`
         );
       } else {
         alert("Extraction failed: " + (data.error || "Unknown error"));
@@ -100,7 +122,7 @@ export default function InvoicesOCRPage() {
 
   // Push directly to Tally Prime (port 9000)
   const handlePushAllToTally = async () => {
-    if (invoices.length === 0) return;
+    if (currentInvoices.length === 0) return;
 
     setIsPushingToTally(true);
     setPushStatusMessage(null);
@@ -109,7 +131,9 @@ export default function InvoicesOCRPage() {
     try {
       const xmlPayload = buildBatchTallyPurchaseXml(
         "Apex Logistics India Pvt Ltd",
-        invoices
+        currentInvoices,
+        true,
+        activeTab
       );
 
       const res = await fetch("/api/tally/push", {
@@ -121,11 +145,14 @@ export default function InvoicesOCRPage() {
       const result = await res.json();
       if (result.success) {
         setPushStatusMessage(
-          `✓ Successfully pushed ${invoices.length} invoice vouchers into Tally Prime (Port 9000)! Entries are now in your Day Book.`
+          `✓ Successfully pushed ${currentInvoices.length} ${activeTab} vouchers into Tally Prime (Port 9000)! Entries are now in your Day Book.`
         );
-        // Mark all as pushed
         setInvoices((prev) =>
-          prev.map((inv) => ({ ...inv, status: "Pushed to Tally" }))
+          prev.map((inv) =>
+            (inv.type || "Purchase") === activeTab
+              ? { ...inv, status: "Pushed to Tally" }
+              : inv
+          )
         );
       } else {
         setPushErrorDetails(
@@ -144,18 +171,20 @@ export default function InvoicesOCRPage() {
     }
   };
 
-  // Download Tally XML file
+  // Download Tally XML file (Unified Vouchers + Auto-Created Ledgers)
   const handleDownloadXml = () => {
-    if (invoices.length === 0) return;
+    if (currentInvoices.length === 0) return;
     const xmlPayload = buildBatchTallyPurchaseXml(
       "Apex Logistics India Pvt Ltd",
-      invoices
+      currentInvoices,
+      true,
+      activeTab
     );
     const blob = new Blob([xmlPayload], { type: "application/xml" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
-    a.download = `Papneja_Tally_Invoices_${new Date().toISOString().slice(0, 10)}.xml`;
+    a.download = `Papneja_Tally_${activeTab}_Invoices_${new Date().toISOString().slice(0, 10)}.xml`;
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
@@ -164,16 +193,17 @@ export default function InvoicesOCRPage() {
 
   // Download Ledgers Master XML file (for Import > Masters)
   const handleDownloadMastersXml = () => {
-    if (invoices.length === 0) return;
+    if (currentInvoices.length === 0) return;
     const xmlPayload = buildBatchTallyLedgerMasterXml(
       "Apex Logistics India Pvt Ltd",
-      invoices
+      currentInvoices,
+      activeTab
     );
     const blob = new Blob([xmlPayload], { type: "application/xml" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
-    a.download = `Papneja_Tally_Masters_${new Date().toISOString().slice(0, 10)}.xml`;
+    a.download = `Papneja_Tally_${activeTab}_Masters_${new Date().toISOString().slice(0, 10)}.xml`;
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
@@ -185,44 +215,48 @@ export default function InvoicesOCRPage() {
     setInvoices((prev) => prev.filter((inv) => inv.id !== id));
   };
 
-  // Clear all
+  // Clear current tab queue
   const handleClearAll = () => {
-    setInvoices([]);
+    setInvoices((prev) =>
+      prev.filter((inv) => (inv.type || "Purchase") !== activeTab)
+    );
     setPushStatusMessage(null);
     setPushErrorDetails(null);
   };
 
   // Total metrics
-  const totalTaxable = invoices.reduce((sum, inv) => sum + inv.taxableValue, 0);
-  const totalTax = invoices.reduce(
+  const totalTaxable = currentInvoices.reduce((sum, inv) => sum + inv.taxableValue, 0);
+  const totalTax = currentInvoices.reduce(
     (sum, inv) => sum + inv.cgst + inv.sgst + inv.igst,
     0
   );
-  const totalGrand = invoices.reduce((sum, inv) => sum + inv.totalAmount, 0);
+  const totalGrand = currentInvoices.reduce((sum, inv) => sum + inv.totalAmount, 0);
 
   return (
     <div className="space-y-6">
       {/* Top Header */}
       <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 bg-white p-6 rounded-2xl border border-slate-200 shadow-sm">
         <div>
-          <div className="flex items-center gap-3">
+          <div className="flex flex-wrap items-center gap-3">
             <h1 className="text-2xl font-bold text-slate-900 tracking-tight">
-              Purchase Invoice Automation • Tally Integration
+              {activeTab === "Purchase" ? "Purchase Invoice" : "Sales Invoice"} Automation • Tally Integration
             </h1>
             <span className="px-2.5 py-0.5 rounded-full text-xs font-semibold bg-blue-50 text-blue-700 border border-blue-200">
-              Active Client: Apex Logistics (Delhi • 07AABCA1234F1Z8)
+              Company: Apex Logistics (Delhi • 07AABCA1234F1Z8)
             </span>
             <span className="px-2.5 py-0.5 rounded-full text-xs font-semibold bg-emerald-50 text-emerald-700 border border-emerald-200">
               ✓ Auto-Creates Missing Ledgers in Tally
             </span>
           </div>
           <p className="text-sm text-slate-500 mt-1">
-            Drag and drop real purchase bills (PDF or Images). The engine extracts GSTINs, splits Intra/Inter-state taxes, and enters the vouchers directly into Tally Prime.
+            {activeTab === "Purchase"
+              ? "Drag & drop vendor purchase bills. Auto-creates Sundry Creditors & Input GST, and balances purchase entries."
+              : "Drag & drop customer sales invoices. Auto-creates Sundry Debtors & Output GST, and balances sales entries."}
           </p>
         </div>
 
         <div className="flex items-center gap-3 self-stretch sm:self-auto">
-          {invoices.length > 0 && (
+          {currentInvoices.length > 0 && (
             <>
               <button
                 onClick={handleClearAll}
@@ -244,7 +278,7 @@ export default function InvoicesOCRPage() {
                 className="flex items-center gap-2 px-4 py-2.5 rounded-xl border border-emerald-300 bg-emerald-50 text-emerald-800 hover:bg-emerald-100 text-sm font-semibold shadow-sm transition-all"
               >
                 <Download className="w-4 h-4 text-emerald-600" />
-                <span>Download Tally XML ({invoices.length})</span>
+                <span>Download Tally XML ({currentInvoices.length})</span>
               </button>
               <button
                 onClick={handlePushAllToTally}
@@ -259,13 +293,46 @@ export default function InvoicesOCRPage() {
                 ) : (
                   <>
                     <Send className="w-4 h-4" />
-                    <span>Push {invoices.length} to Tally Prime</span>
+                    <span>Push {currentInvoices.length} to Tally Prime</span>
                   </>
                 )}
               </button>
             </>
           )}
         </div>
+      </div>
+
+      {/* PURCHASE vs SALES TAB SELECTOR */}
+      <div className="flex border-b border-slate-200 bg-white px-6 pt-3 rounded-2xl shadow-sm gap-4">
+        <button
+          onClick={() => handleTabChange("Purchase")}
+          className={`flex items-center gap-2 py-3 px-4 border-b-2 text-sm font-bold transition-all ${
+            activeTab === "Purchase"
+              ? "border-blue-600 text-blue-600"
+              : "border-transparent text-slate-500 hover:text-slate-800"
+          }`}
+        >
+          <ShoppingCart className="w-4 h-4" />
+          <span>Purchase Bills (Vendors)</span>
+          <span className="ml-1 text-xs px-2 py-0.5 rounded-full bg-slate-100 text-slate-600">
+            {invoices.filter((i) => (i.type || "Purchase") === "Purchase").length}
+          </span>
+        </button>
+
+        <button
+          onClick={() => handleTabChange("Sales")}
+          className={`flex items-center gap-2 py-3 px-4 border-b-2 text-sm font-bold transition-all ${
+            activeTab === "Sales"
+              ? "border-emerald-600 text-emerald-600"
+              : "border-transparent text-slate-500 hover:text-slate-800"
+          }`}
+        >
+          <TrendingUp className="w-4 h-4" />
+          <span>Sales Invoices (Customers)</span>
+          <span className="ml-1 text-xs px-2 py-0.5 rounded-full bg-slate-100 text-slate-600">
+            {invoices.filter((i) => i.type === "Sales").length}
+          </span>
+        </button>
       </div>
 
       {/* DRAG & DROP UPLOAD ZONE */}
@@ -293,11 +360,15 @@ export default function InvoicesOCRPage() {
             className={`w-16 h-16 rounded-2xl flex items-center justify-center transition-transform ${
               isDragging
                 ? "bg-blue-600 text-white scale-110 shadow-lg"
+                : activeTab === "Sales"
+                ? "bg-emerald-50 text-emerald-600"
                 : "bg-blue-50 text-blue-600"
             }`}
           >
             {isProcessing ? (
-              <RefreshCw className="w-8 h-8 animate-spin text-blue-600" />
+              <RefreshCw className="w-8 h-8 animate-spin" />
+            ) : activeTab === "Sales" ? (
+              <TrendingUp className="w-8 h-8" />
             ) : (
               <UploadCloud className="w-8 h-8" />
             )}
@@ -306,11 +377,11 @@ export default function InvoicesOCRPage() {
           <div>
             <h3 className="text-lg font-bold text-slate-800">
               {isProcessing
-                ? "Extracting Real Invoice Data with Multimodal AI..."
-                : "Drop your real invoices here or browse files"}
+                ? `Extracting ${activeTab} Invoices with Multimodal AI...`
+                : `Drop your real ${activeTab} invoices here or browse files`}
             </h3>
             <p className="text-xs text-slate-500 mt-1">
-              Supports real PDF, JPG, PNG, WEBP invoices. Upload 5, 10, or 20 bills at once.
+              Supports real PDF, JPG, PNG, WEBP. Upload 5, 10, or 20 bills at once.
             </p>
           </div>
 
@@ -318,7 +389,11 @@ export default function InvoicesOCRPage() {
             type="button"
             disabled={isProcessing}
             onClick={() => fileInputRef.current?.click()}
-            className="px-6 py-3 rounded-xl bg-blue-600 hover:bg-blue-700 disabled:bg-blue-400 text-white text-sm font-semibold shadow-md shadow-blue-500/20 transition-all flex items-center gap-2"
+            className={`px-6 py-3 rounded-xl text-white text-sm font-semibold shadow-md transition-all flex items-center gap-2 ${
+              activeTab === "Sales"
+                ? "bg-emerald-600 hover:bg-emerald-700 shadow-emerald-500/20"
+                : "bg-blue-600 hover:bg-blue-700 shadow-blue-500/20"
+            }`}
           >
             {isProcessing ? (
               <>
@@ -328,7 +403,7 @@ export default function InvoicesOCRPage() {
             ) : (
               <>
                 <FileCheck className="w-4 h-4" />
-                <span>Choose Invoice Files from Computer</span>
+                <span>Choose {activeTab} Files from Computer</span>
               </>
             )}
           </button>
@@ -368,17 +443,19 @@ export default function InvoicesOCRPage() {
       )}
 
       {/* Summary KPI Cards (Only when invoices exist) */}
-      {invoices.length > 0 && (
+      {currentInvoices.length > 0 && (
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
           <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm">
             <span className="text-xs font-bold uppercase tracking-wider text-slate-400">
-              Invoices Ready
+              {activeTab} Vouchers Ready
             </span>
             <div className="text-2xl font-black text-slate-900 mt-2">
-              {invoices.length} Vouchers
+              {currentInvoices.length} Vouchers
             </div>
             <div className="text-xs text-blue-600 font-medium mt-1">
-              All mapped to Creditor &amp; Purchase A/c
+              {activeTab === "Sales"
+                ? "Mapped to Customer (Debtor) & Sales A/c"
+                : "Mapped to Vendor (Creditor) & Purchase A/c"}
             </div>
           </div>
 
@@ -390,13 +467,13 @@ export default function InvoicesOCRPage() {
               ₹{totalTaxable.toLocaleString("en-IN", { minimumFractionDigits: 2 })}
             </div>
             <div className="text-xs text-slate-500 font-medium mt-1">
-              Debit to Purchase Ledgers
+              {activeTab === "Sales" ? "Credit to Sales Ledgers" : "Debit to Purchase Ledgers"}
             </div>
           </div>
 
           <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm">
             <span className="text-xs font-bold uppercase tracking-wider text-slate-400">
-              Input Tax Credit (ITC)
+              {activeTab === "Sales" ? "Output GST Liability" : "Input Tax Credit (ITC)"}
             </span>
             <div className="text-2xl font-black text-emerald-600 mt-2">
               ₹{totalTax.toLocaleString("en-IN", { minimumFractionDigits: 2 })}
@@ -408,13 +485,13 @@ export default function InvoicesOCRPage() {
 
           <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm">
             <span className="text-xs font-bold uppercase tracking-wider text-slate-400">
-              Total Bill Value
+              Total Invoice Amount
             </span>
             <div className="text-2xl font-black text-slate-900 mt-2">
               ₹{totalGrand.toLocaleString("en-IN", { minimumFractionDigits: 2 })}
             </div>
             <div className="text-xs text-slate-500 font-medium mt-1">
-              Credit to Vendor Accounts
+              {activeTab === "Sales" ? "Debit to Customer Accounts" : "Credit to Vendor Accounts"}
             </div>
           </div>
         </div>
@@ -426,24 +503,24 @@ export default function InvoicesOCRPage() {
           <div className="flex items-center gap-2">
             <Layers className="w-5 h-5 text-blue-600" />
             <h2 className="text-sm font-bold uppercase tracking-wider text-slate-800">
-              Batch Invoice Queue ({invoices.length}) • Double Entry Mappings
+              {activeTab} Batch Queue ({currentInvoices.length}) • Double Entry Mappings
             </h2>
           </div>
-          {invoices.length > 0 && (
+          {currentInvoices.length > 0 && (
             <span className="text-xs text-slate-400">
               Click any row to inspect double-entry debit/credit ledger structure
             </span>
           )}
         </div>
 
-        {invoices.length === 0 ? (
+        {currentInvoices.length === 0 ? (
           <div className="p-16 text-center">
             <div className="w-16 h-16 mx-auto bg-slate-100 rounded-2xl flex items-center justify-center text-slate-400 mb-4">
               <FileSpreadsheet className="w-8 h-8" />
             </div>
-            <h3 className="text-base font-semibold text-slate-700">No invoices in queue</h3>
+            <h3 className="text-base font-semibold text-slate-700">No {activeTab} invoices in queue</h3>
             <p className="text-sm text-slate-400 mt-1 max-w-sm mx-auto">
-              Drop your real invoice PDFs or images above. The AI will extract the vendor details, calculate GST, and prepare the Tally XML automatically.
+              Drop your real {activeTab} invoice PDFs or images above. The AI will extract {activeTab === "Sales" ? "customer" : "vendor"} details, calculate GST, and prepare the Tally XML automatically.
             </p>
           </div>
         ) : (
@@ -451,19 +528,23 @@ export default function InvoicesOCRPage() {
             <table className="w-full text-left border-collapse text-xs">
               <thead>
                 <tr className="bg-slate-50 text-slate-500 font-semibold uppercase tracking-wider border-b border-slate-200">
-                  <th className="py-3 px-4">Vendor / Creditor</th>
+                  <th className="py-3 px-4">
+                    {activeTab === "Sales" ? "Customer / Debtor" : "Vendor / Creditor"}
+                  </th>
                   <th className="py-3 px-4">Invoice # &amp; Date</th>
                   <th className="py-3 px-4">GST Nature</th>
                   <th className="py-3 px-4 text-right">Taxable</th>
                   <th className="py-3 px-4 text-right">Tax (C+S / IGST)</th>
                   <th className="py-3 px-4 text-right">Grand Total</th>
-                  <th className="py-3 px-4">Target Tally Ledger</th>
+                  <th className="py-3 px-4">
+                    {activeTab === "Sales" ? "Target Sales Ledger" : "Target Purchase Ledger"}
+                  </th>
                   <th className="py-3 px-4 text-center">Status</th>
                   <th className="py-3 px-4 text-center">Action</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100 font-medium">
-                {invoices.map((inv) => (
+                {currentInvoices.map((inv) => (
                   <tr
                     key={inv.id}
                     onClick={() => setSelectedInvoice(inv)}
@@ -546,7 +627,7 @@ export default function InvoicesOCRPage() {
               <div className="flex items-center gap-2">
                 <FileCheck className="w-5 h-5 text-emerald-400" />
                 <h3 className="font-bold text-base">
-                  Tally Double-Entry Voucher Inspector
+                  Tally Double-Entry {selectedInvoice.type || activeTab} Voucher Inspector
                 </h3>
               </div>
               <button
@@ -561,7 +642,9 @@ export default function InvoicesOCRPage() {
               {/* Header Details */}
               <div className="grid grid-cols-2 sm:grid-cols-3 gap-4 p-4 bg-slate-50 rounded-xl text-xs">
                 <div>
-                  <div className="text-slate-400 uppercase">Vendor (Sundry Creditor)</div>
+                  <div className="text-slate-400 uppercase">
+                    {(selectedInvoice.type || activeTab) === "Sales" ? "Customer (Sundry Debtor)" : "Vendor (Sundry Creditor)"}
+                  </div>
                   <div className="font-bold text-slate-900 mt-0.5">{selectedInvoice.vendorName}</div>
                   <div className="text-blue-600 font-mono mt-0.5">{selectedInvoice.vendorGstin}</div>
                 </div>
@@ -595,66 +678,129 @@ export default function InvoicesOCRPage() {
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-100 font-mono">
-                      {/* Debit: Purchase */}
-                      <tr className="bg-emerald-50/30">
-                        <td className="py-2 px-3 text-emerald-700 font-bold">DR</td>
-                        <td className="py-2 px-3 font-sans font-medium text-slate-800">
-                          {selectedInvoice.ledgers.purchaseLedger}
-                        </td>
-                        <td className="py-2 px-3 text-right text-emerald-700 font-bold">
-                          ₹{selectedInvoice.taxableValue.toFixed(2)}
-                        </td>
-                        <td className="py-2 px-3 text-right text-slate-400">-</td>
-                      </tr>
+                      {(selectedInvoice.type || activeTab) === "Sales" ? (
+                        /* SALES ENTRIES: Customer DR, Sales CR, Output Tax CR */
+                        <>
+                          <tr className="bg-blue-50/30">
+                            <td className="py-2 px-3 text-blue-700 font-bold">DR</td>
+                            <td className="py-2 px-3 font-sans font-medium text-slate-800">
+                              {selectedInvoice.ledgers.vendorLedger} (Customer / Debtor)
+                            </td>
+                            <td className="py-2 px-3 text-right text-blue-700 font-bold">
+                              ₹{selectedInvoice.totalAmount.toFixed(2)}
+                            </td>
+                            <td className="py-2 px-3 text-right text-slate-400">-</td>
+                          </tr>
 
-                      {/* Debit: CGST / SGST or IGST */}
-                      {selectedInvoice.isInterstate ? (
-                        <tr className="bg-emerald-50/30">
-                          <td className="py-2 px-3 text-emerald-700 font-bold">DR</td>
-                          <td className="py-2 px-3 font-sans font-medium text-slate-800">
-                            {selectedInvoice.ledgers.igstLedger}
-                          </td>
-                          <td className="py-2 px-3 text-right text-emerald-700 font-bold">
-                            ₹{selectedInvoice.igst.toFixed(2)}
-                          </td>
-                          <td className="py-2 px-3 text-right text-slate-400">-</td>
-                        </tr>
+                          <tr className="bg-emerald-50/30">
+                            <td className="py-2 px-3 text-emerald-700 font-bold">CR</td>
+                            <td className="py-2 px-3 font-sans font-medium text-slate-800">
+                              {selectedInvoice.ledgers.purchaseLedger} (Sales A/c)
+                            </td>
+                            <td className="py-2 px-3 text-right text-slate-400">-</td>
+                            <td className="py-2 px-3 text-right text-emerald-700 font-bold">
+                              ₹{selectedInvoice.taxableValue.toFixed(2)}
+                            </td>
+                          </tr>
+
+                          {selectedInvoice.isInterstate ? (
+                            <tr className="bg-emerald-50/30">
+                              <td className="py-2 px-3 text-emerald-700 font-bold">CR</td>
+                              <td className="py-2 px-3 font-sans font-medium text-slate-800">
+                                {selectedInvoice.ledgers.igstLedger}
+                              </td>
+                              <td className="py-2 px-3 text-right text-slate-400">-</td>
+                              <td className="py-2 px-3 text-right text-emerald-700 font-bold">
+                                ₹{selectedInvoice.igst.toFixed(2)}
+                              </td>
+                            </tr>
+                          ) : (
+                            <>
+                              <tr className="bg-emerald-50/30">
+                                <td className="py-2 px-3 text-emerald-700 font-bold">CR</td>
+                                <td className="py-2 px-3 font-sans font-medium text-slate-800">
+                                  {selectedInvoice.ledgers.cgstLedger}
+                                </td>
+                                <td className="py-2 px-3 text-right text-slate-400">-</td>
+                                <td className="py-2 px-3 text-right text-emerald-700 font-bold">
+                                  ₹{selectedInvoice.cgst.toFixed(2)}
+                                </td>
+                              </tr>
+                              <tr className="bg-emerald-50/30">
+                                <td className="py-2 px-3 text-emerald-700 font-bold">CR</td>
+                                <td className="py-2 px-3 font-sans font-medium text-slate-800">
+                                  {selectedInvoice.ledgers.sgstLedger}
+                                </td>
+                                <td className="py-2 px-3 text-right text-slate-400">-</td>
+                                <td className="py-2 px-3 text-right text-emerald-700 font-bold">
+                                  ₹{selectedInvoice.sgst.toFixed(2)}
+                                </td>
+                              </tr>
+                            </>
+                          )}
+                        </>
                       ) : (
+                        /* PURCHASE ENTRIES: Supplier CR, Purchase DR, Input Tax DR */
                         <>
                           <tr className="bg-emerald-50/30">
                             <td className="py-2 px-3 text-emerald-700 font-bold">DR</td>
                             <td className="py-2 px-3 font-sans font-medium text-slate-800">
-                              {selectedInvoice.ledgers.cgstLedger}
+                              {selectedInvoice.ledgers.purchaseLedger}
                             </td>
                             <td className="py-2 px-3 text-right text-emerald-700 font-bold">
-                              ₹{selectedInvoice.cgst.toFixed(2)}
+                              ₹{selectedInvoice.taxableValue.toFixed(2)}
                             </td>
                             <td className="py-2 px-3 text-right text-slate-400">-</td>
                           </tr>
-                          <tr className="bg-emerald-50/30">
-                            <td className="py-2 px-3 text-emerald-700 font-bold">DR</td>
+
+                          {selectedInvoice.isInterstate ? (
+                            <tr className="bg-emerald-50/30">
+                              <td className="py-2 px-3 text-emerald-700 font-bold">DR</td>
+                              <td className="py-2 px-3 font-sans font-medium text-slate-800">
+                                {selectedInvoice.ledgers.igstLedger}
+                              </td>
+                              <td className="py-2 px-3 text-right text-emerald-700 font-bold">
+                                ₹{selectedInvoice.igst.toFixed(2)}
+                              </td>
+                              <td className="py-2 px-3 text-right text-slate-400">-</td>
+                            </tr>
+                          ) : (
+                            <>
+                              <tr className="bg-emerald-50/30">
+                                <td className="py-2 px-3 text-emerald-700 font-bold">DR</td>
+                                <td className="py-2 px-3 font-sans font-medium text-slate-800">
+                                  {selectedInvoice.ledgers.cgstLedger}
+                                </td>
+                                <td className="py-2 px-3 text-right text-emerald-700 font-bold">
+                                  ₹{selectedInvoice.cgst.toFixed(2)}
+                                </td>
+                                <td className="py-2 px-3 text-right text-slate-400">-</td>
+                              </tr>
+                              <tr className="bg-emerald-50/30">
+                                <td className="py-2 px-3 text-emerald-700 font-bold">DR</td>
+                                <td className="py-2 px-3 font-sans font-medium text-slate-800">
+                                  {selectedInvoice.ledgers.sgstLedger}
+                                </td>
+                                <td className="py-2 px-3 text-right text-emerald-700 font-bold">
+                                  ₹{selectedInvoice.sgst.toFixed(2)}
+                                </td>
+                                <td className="py-2 px-3 text-right text-slate-400">-</td>
+                              </tr>
+                            </>
+                          )}
+
+                          <tr className="bg-blue-50/30">
+                            <td className="py-2 px-3 text-blue-700 font-bold">CR</td>
                             <td className="py-2 px-3 font-sans font-medium text-slate-800">
-                              {selectedInvoice.ledgers.sgstLedger}
-                            </td>
-                            <td className="py-2 px-3 text-right text-emerald-700 font-bold">
-                              ₹{selectedInvoice.sgst.toFixed(2)}
+                              {selectedInvoice.ledgers.vendorLedger} (Party / Creditor)
                             </td>
                             <td className="py-2 px-3 text-right text-slate-400">-</td>
+                            <td className="py-2 px-3 text-right text-blue-700 font-bold">
+                              ₹{selectedInvoice.totalAmount.toFixed(2)}
+                            </td>
                           </tr>
                         </>
                       )}
-
-                      {/* Credit: Vendor */}
-                      <tr className="bg-blue-50/30">
-                        <td className="py-2 px-3 text-blue-700 font-bold">CR</td>
-                        <td className="py-2 px-3 font-sans font-medium text-slate-800">
-                          {selectedInvoice.ledgers.vendorLedger} (Party Ledger)
-                        </td>
-                        <td className="py-2 px-3 text-right text-slate-400">-</td>
-                        <td className="py-2 px-3 text-right text-blue-700 font-bold">
-                          ₹{selectedInvoice.totalAmount.toFixed(2)}
-                        </td>
-                      </tr>
 
                       {/* Balanced Total */}
                       <tr className="bg-slate-100 font-bold text-slate-900 border-t-2 border-slate-300">

@@ -1,7 +1,10 @@
+export type InvoiceType = "Purchase" | "Sales";
+
 export interface ParsedInvoice {
   id: string;
   fileName: string;
-  vendorName: string;
+  type?: InvoiceType; // "Purchase" or "Sales"
+  vendorName: string; // Supplier (for Purchase) or Customer (for Sales)
   vendorGstin: string;
   buyerName: string;
   buyerGstin: string;
@@ -18,11 +21,11 @@ export interface ParsedInvoice {
   supplierState: string;
   buyerState: string;
   ledgers: {
-    vendorLedger: string;
-    purchaseLedger: string;
-    cgstLedger?: string;
-    sgstLedger?: string;
-    igstLedger?: string;
+    vendorLedger: string; // Party ledger (Sundry Creditor or Sundry Debtor)
+    purchaseLedger: string; // Target Purchase A/c or Sales A/c
+    cgstLedger?: string; // Input CGST or Output CGST
+    sgstLedger?: string; // Input SGST or Output SGST
+    igstLedger?: string; // Input IGST or Output IGST
     roundOffLedger?: string;
   };
   status: "Uploaded" | "OCR Parsing" | "Matched" | "Pushed to Tally" | "Failed";
@@ -70,12 +73,14 @@ export const GST_STATE_CODES: Record<string, string> = {
 
 /**
  * Determine GST ledgers and tax breakdown based on buyer and seller GSTINs
+ * Supports both Purchase and Sales transactions
  */
 export function determineGstLedgers(
   vendorGstin: string,
   buyerGstin: string,
   taxableValue: number,
-  taxRate: number
+  taxRate: number,
+  invoiceType: InvoiceType = "Purchase"
 ) {
   const vendorStateCode = vendorGstin.slice(0, 2);
   const buyerStateCode = buyerGstin.slice(0, 2);
@@ -102,9 +107,27 @@ export function determineGstLedgers(
   const roundedTotal = Math.round(exactTotal);
   const roundOff = Number((roundedTotal - exactTotal).toFixed(2));
 
-  const purchaseLedger = isInterstate
-    ? `Purchase - Interstate @ ${taxRate}%`
-    : `Purchase - GST @ ${taxRate}%`;
+  // Ledger naming based on Purchase vs Sales
+  let mainAccountLedger: string;
+  let cgstLedgerName: string | undefined;
+  let sgstLedgerName: string | undefined;
+  let igstLedgerName: string | undefined;
+
+  if (invoiceType === "Sales") {
+    mainAccountLedger = isInterstate
+      ? `Sales - Interstate @ ${taxRate}%`
+      : `Sales - GST @ ${taxRate}%`;
+    cgstLedgerName = isInterstate ? undefined : `Output CGST @ ${taxRate / 2}%`;
+    sgstLedgerName = isInterstate ? undefined : `Output SGST @ ${taxRate / 2}%`;
+    igstLedgerName = isInterstate ? `Output IGST @ ${taxRate}%` : undefined;
+  } else {
+    mainAccountLedger = isInterstate
+      ? `Purchase - Interstate @ ${taxRate}%`
+      : `Purchase - GST @ ${taxRate}%`;
+    cgstLedgerName = isInterstate ? undefined : `Input CGST @ ${taxRate / 2}%`;
+    sgstLedgerName = isInterstate ? undefined : `Input SGST @ ${taxRate / 2}%`;
+    igstLedgerName = isInterstate ? `Input IGST @ ${taxRate}%` : undefined;
+  }
 
   return {
     isInterstate,
@@ -115,51 +138,62 @@ export function determineGstLedgers(
     igst,
     roundOff,
     totalAmount: roundedTotal,
-    purchaseLedger,
-    cgstLedger: isInterstate ? undefined : `Input CGST @ ${taxRate / 2}%`,
-    sgstLedger: isInterstate ? undefined : `Input SGST @ ${taxRate / 2}%`,
-    igstLedger: isInterstate ? `Input IGST @ ${taxRate}%` : undefined,
+    purchaseLedger: mainAccountLedger,
+    cgstLedger: cgstLedgerName,
+    sgstLedger: sgstLedgerName,
+    igstLedger: igstLedgerName,
     roundOffLedger: roundOff !== 0 ? "Round Off (+/-)" : undefined,
   };
 }
 
 /**
- * Generates XML definition for unique Ledgers (Sundry Creditors, Purchase A/c, Tax A/c)
+ * Generates XML definition for unique Ledgers (Sundry Creditors / Debtors, Purchase / Sales A/c, Tax A/c)
  * This allows Tally Prime to automatically create missing ledgers on the fly during import!
  */
-export function generateLedgerMastersXml(invoices: ParsedInvoice[]): string {
+export function generateLedgerMastersXml(
+  invoices: ParsedInvoice[],
+  defaultType: InvoiceType = "Purchase"
+): string {
   const ledgerMessages: string[] = [];
   const seenLedgers = new Set<string>();
 
   invoices.forEach((inv) => {
-    // 1. Vendor (Party) Ledger -> Sundry Creditors
-    const vendorName = inv.vendorName?.trim() || "Commercial Vendor";
-    if (!seenLedgers.has(vendorName)) {
-      seenLedgers.add(vendorName);
+    const type = inv.type || defaultType;
+    const isSales = type === "Sales";
+
+    // 1. Party Ledger -> Sundry Creditors (for Purchase) OR Sundry Debtors (for Sales)
+    const partyName = inv.vendorName?.trim() || (isSales ? "Customer A/c" : "Commercial Vendor");
+    const partyGroup = isSales ? "Sundry Debtors" : "Sundry Creditors";
+    const partyState = isSales ? inv.buyerState : inv.supplierState;
+    const partyGstin = isSales ? inv.buyerGstin : inv.vendorGstin;
+
+    if (!seenLedgers.has(partyName)) {
+      seenLedgers.add(partyName);
       ledgerMessages.push(`
         <TALLYMESSAGE xmlns:UDF="TallyUDF">
-          <LEDGER NAME="${escapeXml(vendorName)}" ACTION="Create">
-            <NAME>${escapeXml(vendorName)}</NAME>
-            <PARENT>Sundry Creditors</PARENT>
+          <LEDGER NAME="${escapeXml(partyName)}" ACTION="Create">
+            <NAME>${escapeXml(partyName)}</NAME>
+            <PARENT>${partyGroup}</PARENT>
             <ISBILLWISEON>Yes</ISBILLWISEON>
             <AFFECTSSTOCK>No</AFFECTSSTOCK>
             <COUNTRYNAME>India</COUNTRYNAME>
-            <LEDSTATENAME>${escapeXml(inv.supplierState)}</LEDSTATENAME>
-            <PARTYGSTIN>${escapeXml(inv.vendorGstin)}</PARTYGSTIN>
+            <LEDSTATENAME>${escapeXml(partyState)}</LEDSTATENAME>
+            <PARTYGSTIN>${escapeXml(partyGstin)}</PARTYGSTIN>
             <GSTREGISTRATIONTYPE>Regular</GSTREGISTRATIONTYPE>
           </LEDGER>
         </TALLYMESSAGE>`);
     }
 
-    // 2. Purchase Account -> Purchase Accounts
-    const purchaseLedger = inv.ledgers.purchaseLedger;
-    if (purchaseLedger && !seenLedgers.has(purchaseLedger)) {
-      seenLedgers.add(purchaseLedger);
+    // 2. Main Account Ledger -> Purchase Accounts OR Sales Accounts
+    const mainLedger = inv.ledgers.purchaseLedger;
+    const mainGroup = isSales ? "Sales Accounts" : "Purchase Accounts";
+    if (mainLedger && !seenLedgers.has(mainLedger)) {
+      seenLedgers.add(mainLedger);
       ledgerMessages.push(`
         <TALLYMESSAGE xmlns:UDF="TallyUDF">
-          <LEDGER NAME="${escapeXml(purchaseLedger)}" ACTION="Create">
-            <NAME>${escapeXml(purchaseLedger)}</NAME>
-            <PARENT>Purchase Accounts</PARENT>
+          <LEDGER NAME="${escapeXml(mainLedger)}" ACTION="Create">
+            <NAME>${escapeXml(mainLedger)}</NAME>
+            <PARENT>${mainGroup}</PARENT>
             <ISCOSTCENTRESON>No</ISCOSTCENTRESON>
             <AFFECTSSTOCK>No</AFFECTSSTOCK>
             <ISGSTAPPLICABLE>Applicable</ISGSTAPPLICABLE>
@@ -227,31 +261,110 @@ export function generateLedgerMastersXml(invoices: ParsedInvoice[]): string {
 }
 
 /**
- * Generates an official, Tally Prime-compliant XML import envelope for multiple purchase vouchers.
+ * Generates an official, Tally Prime-compliant XML import envelope for multiple purchase or sales vouchers.
  * By default includes auto-creation of missing ledgers so Tally will create them automatically!
  */
 export function buildBatchTallyPurchaseXml(
   companyName: string,
   invoices: ParsedInvoice[],
-  autoCreateLedgers: boolean = true
+  autoCreateLedgers: boolean = true,
+  invoiceType: InvoiceType = "Purchase"
 ): string {
   // 1. Generate auto-create Ledgers if enabled
-  const ledgersXml = autoCreateLedgers ? generateLedgerMastersXml(invoices) : "";
+  const ledgersXml = autoCreateLedgers ? generateLedgerMastersXml(invoices, invoiceType) : "";
 
-  // 2. Generate Vouchers
+  // 2. Generate Vouchers (Purchase or Sales)
   const voucherMessages = invoices
     .map((inv) => {
+      const type = inv.type || invoiceType;
+      const isSales = type === "Sales";
+      const voucherTypeName = isSales ? "Sales" : "Purchase";
+
       const tallyDate = (inv.invoiceDate || new Date().toISOString().slice(0, 10)).replace(/-/g, "");
-      const cleanInvNo = escapeXml(inv.invoiceNo || "INV-001");
-      const cleanVendor = escapeXml(inv.vendorName || "Sundry Creditor");
+      const cleanInvNo = escapeXml(inv.invoiceNo || (isSales ? "SALES-001" : "INV-001"));
+      const cleanParty = escapeXml(inv.vendorName || (isSales ? "Sundry Debtor" : "Sundry Creditor"));
       const cleanNarration = escapeXml(
-        `Purchase Invoice #${inv.invoiceNo} dt. ${inv.invoiceDate} from ${inv.vendorName} (GSTIN: ${inv.vendorGstin})`
+        `${voucherTypeName} Invoice #${inv.invoiceNo} dt. ${inv.invoiceDate} ${isSales ? "to" : "from"} ${inv.vendorName} (GSTIN: ${inv.vendorGstin})`
       );
 
-      let ledgerEntriesXml = `
+      let ledgerEntriesXml = "";
+
+      if (isSales) {
+        // SALES ACCOUNTING ENTRIES:
+        // 1. Customer (Debtor): Debited (ISDEEMEDPOSITIVE = Yes, Amount = negative Total)
+        // 2. Sales Account: Credited (ISDEEMEDPOSITIVE = No, Amount = positive Taxable)
+        // 3. Tax Ledgers: Credited (ISDEEMEDPOSITIVE = No, Amount = positive Tax)
+        // 4. Round Off: Credited/Debited as required
+        ledgerEntriesXml = `
+          <!-- Customer / Debtor (Debit) -->
+          <ALLLEDGERENTRIES.LIST>
+            <LEDGERNAME>${cleanParty}</LEDGERNAME>
+            <ISDEEMEDPOSITIVE>Yes</ISDEEMEDPOSITIVE>
+            <AMOUNT>-${Math.abs(inv.totalAmount).toFixed(2)}</AMOUNT>
+            <BILLALLOCATIONS.LIST>
+              <NAME>${cleanInvNo}</NAME>
+              <BILLTYPE>New Ref</BILLTYPE>
+              <AMOUNT>-${Math.abs(inv.totalAmount).toFixed(2)}</AMOUNT>
+            </BILLALLOCATIONS.LIST>
+          </ALLLEDGERENTRIES.LIST>
+
+          <!-- Sales Account (Credit) -->
+          <ALLLEDGERENTRIES.LIST>
+            <LEDGERNAME>${escapeXml(inv.ledgers.purchaseLedger)}</LEDGERNAME>
+            <ISDEEMEDPOSITIVE>No</ISDEEMEDPOSITIVE>
+            <AMOUNT>${Math.abs(inv.taxableValue).toFixed(2)}</AMOUNT>
+          </ALLLEDGERENTRIES.LIST>`;
+
+        if (inv.isInterstate && inv.igst > 0 && inv.ledgers.igstLedger) {
+          ledgerEntriesXml += `
+          <!-- Output IGST (Credit) -->
+          <ALLLEDGERENTRIES.LIST>
+            <LEDGERNAME>${escapeXml(inv.ledgers.igstLedger)}</LEDGERNAME>
+            <ISDEEMEDPOSITIVE>No</ISDEEMEDPOSITIVE>
+            <AMOUNT>${Math.abs(inv.igst).toFixed(2)}</AMOUNT>
+          </ALLLEDGERENTRIES.LIST>`;
+        } else {
+          if (inv.cgst > 0 && inv.ledgers.cgstLedger) {
+            ledgerEntriesXml += `
+          <!-- Output CGST (Credit) -->
+          <ALLLEDGERENTRIES.LIST>
+            <LEDGERNAME>${escapeXml(inv.ledgers.cgstLedger)}</LEDGERNAME>
+            <ISDEEMEDPOSITIVE>No</ISDEEMEDPOSITIVE>
+            <AMOUNT>${Math.abs(inv.cgst).toFixed(2)}</AMOUNT>
+          </ALLLEDGERENTRIES.LIST>`;
+          }
+          if (inv.sgst > 0 && inv.ledgers.sgstLedger) {
+            ledgerEntriesXml += `
+          <!-- Output SGST (Credit) -->
+          <ALLLEDGERENTRIES.LIST>
+            <LEDGERNAME>${escapeXml(inv.ledgers.sgstLedger)}</LEDGERNAME>
+            <ISDEEMEDPOSITIVE>No</ISDEEMEDPOSITIVE>
+            <AMOUNT>${Math.abs(inv.sgst).toFixed(2)}</AMOUNT>
+          </ALLLEDGERENTRIES.LIST>`;
+          }
+        }
+
+        if (inv.roundOff !== 0) {
+          // For sales: if roundOff > 0 (e.g. 100.40 -> 101.00), customer owes more, so credit round off income
+          const isDebit = inv.roundOff < 0;
+          ledgerEntriesXml += `
+          <!-- Round Off -->
+          <ALLLEDGERENTRIES.LIST>
+            <LEDGERNAME>Round Off (+/-)</LEDGERNAME>
+            <ISDEEMEDPOSITIVE>${isDebit ? "Yes" : "No"}</ISDEEMEDPOSITIVE>
+            <AMOUNT>${isDebit ? -Math.abs(inv.roundOff).toFixed(2) : Math.abs(inv.roundOff).toFixed(2)}</AMOUNT>
+          </ALLLEDGERENTRIES.LIST>`;
+        }
+      } else {
+        // PURCHASE ACCOUNTING ENTRIES:
+        // 1. Supplier / Party: Credited (ISDEEMEDPOSITIVE = No, Amount = positive Total)
+        // 2. Purchase Account: Debited (ISDEEMEDPOSITIVE = Yes, Amount = negative Taxable)
+        // 3. Tax Ledgers: Debited (ISDEEMEDPOSITIVE = Yes, Amount = negative Tax)
+        // 4. Round Off: Debited/Credited as required
+        ledgerEntriesXml = `
           <!-- Supplier (Credit) -->
           <ALLLEDGERENTRIES.LIST>
-            <LEDGERNAME>${cleanVendor}</LEDGERNAME>
+            <LEDGERNAME>${cleanParty}</LEDGERNAME>
             <ISDEEMEDPOSITIVE>No</ISDEEMEDPOSITIVE>
             <AMOUNT>${Math.abs(inv.totalAmount).toFixed(2)}</AMOUNT>
             <BILLALLOCATIONS.LIST>
@@ -268,55 +381,56 @@ export function buildBatchTallyPurchaseXml(
             <AMOUNT>-${Math.abs(inv.taxableValue).toFixed(2)}</AMOUNT>
           </ALLLEDGERENTRIES.LIST>`;
 
-      if (inv.isInterstate && inv.igst > 0 && inv.ledgers.igstLedger) {
-        ledgerEntriesXml += `
+        if (inv.isInterstate && inv.igst > 0 && inv.ledgers.igstLedger) {
+          ledgerEntriesXml += `
           <!-- Input IGST (Debit) -->
           <ALLLEDGERENTRIES.LIST>
             <LEDGERNAME>${escapeXml(inv.ledgers.igstLedger)}</LEDGERNAME>
             <ISDEEMEDPOSITIVE>Yes</ISDEEMEDPOSITIVE>
             <AMOUNT>-${Math.abs(inv.igst).toFixed(2)}</AMOUNT>
           </ALLLEDGERENTRIES.LIST>`;
-      } else {
-        if (inv.cgst > 0 && inv.ledgers.cgstLedger) {
-          ledgerEntriesXml += `
+        } else {
+          if (inv.cgst > 0 && inv.ledgers.cgstLedger) {
+            ledgerEntriesXml += `
           <!-- Input CGST (Debit) -->
           <ALLLEDGERENTRIES.LIST>
             <LEDGERNAME>${escapeXml(inv.ledgers.cgstLedger)}</LEDGERNAME>
             <ISDEEMEDPOSITIVE>Yes</ISDEEMEDPOSITIVE>
             <AMOUNT>-${Math.abs(inv.cgst).toFixed(2)}</AMOUNT>
           </ALLLEDGERENTRIES.LIST>`;
-        }
-        if (inv.sgst > 0 && inv.ledgers.sgstLedger) {
-          ledgerEntriesXml += `
+          }
+          if (inv.sgst > 0 && inv.ledgers.sgstLedger) {
+            ledgerEntriesXml += `
           <!-- Input SGST (Debit) -->
           <ALLLEDGERENTRIES.LIST>
             <LEDGERNAME>${escapeXml(inv.ledgers.sgstLedger)}</LEDGERNAME>
             <ISDEEMEDPOSITIVE>Yes</ISDEEMEDPOSITIVE>
             <AMOUNT>-${Math.abs(inv.sgst).toFixed(2)}</AMOUNT>
           </ALLLEDGERENTRIES.LIST>`;
+          }
         }
-      }
 
-      if (inv.roundOff !== 0) {
-        const isDebit = inv.roundOff < 0;
-        ledgerEntriesXml += `
+        if (inv.roundOff !== 0) {
+          const isDebit = inv.roundOff < 0;
+          ledgerEntriesXml += `
           <!-- Round Off -->
           <ALLLEDGERENTRIES.LIST>
             <LEDGERNAME>Round Off (+/-)</LEDGERNAME>
             <ISDEEMEDPOSITIVE>${isDebit ? "Yes" : "No"}</ISDEEMEDPOSITIVE>
             <AMOUNT>${isDebit ? -Math.abs(inv.roundOff).toFixed(2) : Math.abs(inv.roundOff).toFixed(2)}</AMOUNT>
           </ALLLEDGERENTRIES.LIST>`;
+        }
       }
 
       return `
         <TALLYMESSAGE xmlns:UDF="TallyUDF">
-          <VOUCHER VCHTYPE="Purchase" ACTION="Create" OBJVIEW="Accounting Voucher View">
+          <VOUCHER VCHTYPE="${voucherTypeName}" ACTION="Create" OBJVIEW="Accounting Voucher View">
             <DATE>${tallyDate}</DATE>
-            <VOUCHERTYPENAME>Purchase</VOUCHERTYPENAME>
+            <VOUCHERTYPENAME>${voucherTypeName}</VOUCHERTYPENAME>
             <VOUCHERNUMBER>${cleanInvNo}</VOUCHERNUMBER>
             <REFERENCE>${cleanInvNo}</REFERENCE>
             <REFERENCEDATE>${tallyDate}</REFERENCEDATE>
-            <PARTYLEDGERNAME>${cleanVendor}</PARTYLEDGERNAME>
+            <PARTYLEDGERNAME>${cleanParty}</PARTYLEDGERNAME>
             <NARRATION>${cleanNarration}</NARRATION>
             ${ledgerEntriesXml}
           </VOUCHER>
@@ -351,9 +465,10 @@ export function buildBatchTallyPurchaseXml(
  */
 export function buildBatchTallyLedgerMasterXml(
   companyName: string,
-  invoices: ParsedInvoice[]
+  invoices: ParsedInvoice[],
+  invoiceType: InvoiceType = "Purchase"
 ): string {
-  const ledgersXml = generateLedgerMastersXml(invoices);
+  const ledgersXml = generateLedgerMastersXml(invoices, invoiceType);
   return `<?xml version="1.0" encoding="utf-8"?>
 <ENVELOPE>
   <HEADER>
