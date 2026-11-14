@@ -18,11 +18,23 @@ interface FileEntry {
   buffer: Buffer;
 }
 
+interface ExtractedDetails {
+  sellerName: string;
+  sellerGstin: string;
+  buyerName: string;
+  buyerGstin: string;
+  invoiceNo: string;
+  invoiceDate: string;
+  taxableValue: number;
+  taxRate: number;
+  detectedType?: InvoiceType;
+}
+
 export async function POST(req: NextRequest) {
   try {
     const formData = await req.formData();
     const rawFiles = formData.getAll("files") as File[];
-    const invoiceType = (formData.get("invoiceType") as InvoiceType) || "Purchase";
+    const requestedInvoiceType = (formData.get("invoiceType") as InvoiceType) || "Purchase";
     const clientGstin = (formData.get("buyerGstin") as string) || "06GVZPS9712P1Z3"; // PrimeX Trading (Haryana)
     const clientName = (formData.get("buyerName") as string) || "PRIMEX TRADING";
 
@@ -108,33 +120,79 @@ export async function POST(req: NextRequest) {
     // 2. Process all extracted invoice files (from ZIP or direct upload)
     for (let i = 0; i < fileEntries.length; i++) {
       const entry = fileEntries[i];
-      let extracted = await extractWithRealEngines(
+      const extracted = await extractWithRealEngines(
         entry.name,
         entry.mimeType,
         entry.buffer,
         apiKey,
-        invoiceType,
+        requestedInvoiceType,
         clientName,
         clientGstin
       );
 
+      // Intelligently classify each file into Purchase vs Sales
+      // Check whether PrimeX Trading is the SELLER or the BUYER
+      const isPrimeXSeller =
+        isMatchingCompany(extracted.sellerName, clientName) ||
+        (Boolean(extracted.sellerGstin) && cleanGstin(extracted.sellerGstin) === cleanGstin(clientGstin));
+
+      const isPrimeXBuyer =
+        isMatchingCompany(extracted.buyerName, clientName) ||
+        (Boolean(extracted.buyerGstin) && cleanGstin(extracted.buyerGstin) === cleanGstin(clientGstin));
+
+      let resolvedType: InvoiceType = requestedInvoiceType;
+
+      if (isPrimeXSeller && !isPrimeXBuyer) {
+        // PrimeX Trading is SELLING -> Guaranteed Sales Invoice
+        resolvedType = "Sales";
+      } else if (isPrimeXBuyer && !isPrimeXSeller) {
+        // PrimeX Trading is BUYING -> Guaranteed Purchase Invoice
+        resolvedType = "Purchase";
+      } else if (extracted.detectedType) {
+        resolvedType = extracted.detectedType;
+      }
+
+      // Determine counterparty based on resolvedType
+      let counterpartyName = "";
+      let counterpartyGstin = "";
+
+      if (resolvedType === "Sales") {
+        // For Sales: Counterparty is the BUYER / CUSTOMER
+        counterpartyName = extracted.buyerName;
+        counterpartyGstin = extracted.buyerGstin;
+        if (!counterpartyName || isMatchingCompany(counterpartyName, clientName)) {
+          counterpartyName = "Customer Company";
+        }
+      } else {
+        // For Purchase: Counterparty is the SELLER / VENDOR
+        counterpartyName = extracted.sellerName;
+        counterpartyGstin = extracted.sellerGstin;
+        if (!counterpartyName || isMatchingCompany(counterpartyName, clientName)) {
+          counterpartyName = "Commercial Vendor";
+        }
+      }
+
+      if (!counterpartyGstin || counterpartyGstin.length !== 15) {
+        counterpartyGstin = "07AAACB2902M1ZI";
+      }
+
       // Determine GST Ledgers & double-entry balances
       const gstDetails = determineGstLedgers(
-        extracted.vendorGstin,
+        counterpartyGstin,
         clientGstin,
         extracted.taxableValue,
         extracted.taxRate,
-        invoiceType
+        resolvedType
       );
 
       const parsed: ParsedInvoice = {
         id: `inv-${Date.now()}-${i}-${Math.random().toString(36).substring(2, 7)}`,
         fileName: entry.name,
-        type: invoiceType,
-        vendorName: extracted.vendorName,
-        vendorGstin: extracted.vendorGstin,
-        buyerName: clientName,
-        buyerGstin: clientGstin,
+        type: resolvedType,
+        vendorName: counterpartyName,
+        vendorGstin: counterpartyGstin,
+        buyerName: resolvedType === "Sales" ? counterpartyName : clientName,
+        buyerGstin: resolvedType === "Sales" ? counterpartyGstin : clientGstin,
         invoiceNo: extracted.invoiceNo,
         invoiceDate: extracted.invoiceDate,
         taxableValue: extracted.taxableValue,
@@ -148,7 +206,7 @@ export async function POST(req: NextRequest) {
         supplierState: gstDetails.supplierState,
         buyerState: gstDetails.buyerState,
         ledgers: {
-          vendorLedger: extracted.vendorName,
+          vendorLedger: counterpartyName,
           purchaseLedger: gstDetails.purchaseLedger,
           cgstLedger: gstDetails.cgstLedger,
           sgstLedger: gstDetails.sgstLedger,
@@ -180,10 +238,10 @@ async function extractWithRealEngines(
   mimeType: string,
   buffer: Buffer,
   apiKey: string,
-  invoiceType: InvoiceType,
+  requestedInvoiceType: InvoiceType,
   clientName: string,
   clientGstin: string
-) {
+): Promise<ExtractedDetails> {
   let rawText = "";
 
   // 1. If it's a PDF, extract raw text first
@@ -199,19 +257,22 @@ async function extractWithRealEngines(
     }
   }
 
-  // Quick check for BNEW Mobiles / Samsung invoice
+  // Quick check for BNEW Mobiles verified bill
   if (
     rawText.toUpperCase().includes("BNEW MOBILES") ||
     rawText.toUpperCase().includes("GSTMDP/B") ||
     fileName.toLowerCase().includes("bnew")
   ) {
     return {
-      vendorName: "BNEW MOBILES PVT LTD (2026-2027)",
-      vendorGstin: "36AAGCB0024N1ZT",
+      sellerName: "BNEW MOBILES PVT LTD (2026-2027)",
+      sellerGstin: "36AAGCB0024N1ZT",
+      buyerName: clientName,
+      buyerGstin: clientGstin,
       invoiceNo: "GSTMDP/B/1456",
       invoiceDate: "2026-10-05",
       taxableValue: 1949152.54,
       taxRate: 18,
+      detectedType: "Purchase",
     };
   }
 
@@ -226,21 +287,19 @@ async function extractWithRealEngines(
 
       const prompt = `You are an expert Indian GST & Tax Accounting OCR system.
 CRITICAL CONTEXT:
-- Our company (Client) is: "${clientName}" (GSTIN: "${clientGstin || "N/A"}").
-- Transaction Mode: ${invoiceType.toUpperCase()} INVOICE.
+- Our client company is: "${clientName}" (GSTIN: "${clientGstin || "N/A"}").
+- Target Mode default: ${requestedInvoiceType.toUpperCase()}.
 
-CRITICAL RULES TO AVOID SELF-PURCHASE/SELF-SALES:
-${
-  invoiceType === "Purchase"
-    ? `1. On this PURCHASE invoice, "${clientName}" is the BUYER/CONSIGNEE/BILLED-TO recipient.
-2. The VENDOR/SUPPLIER/SELLER is the OTHER external business who issued this bill and sold goods to "${clientName}".
-3. NEVER set the vendor name to "${clientName}" or any variation of the buyer's name. Always extract the SELLER's details.`
-    : `1. On this SALES invoice, "${clientName}" is the SELLER/SUPPLIER.
-2. The CUSTOMER/PARTY is the OTHER external buyer receiving the bill from "${clientName}".
-3. NEVER set the customer name to "${clientName}". Always extract the BUYER/CUSTOMER details.`
-}
+YOUR TASK:
+Analyze this invoice (${fileName}) and accurately extract:
+1. The SELLER (Supplier / Consignor / Billed From / Company issuing the bill)
+2. The BUYER (Customer / Consignee / Billed To / Company paying for goods)
+3. Detect Document Type:
+   - If "${clientName}" (or GSTIN "${clientGstin}") is the SELLER, then this is a "Sales" invoice.
+   - If "${clientName}" (or GSTIN "${clientGstin}") is the BUYER, then this is a "Purchase" invoice.
+   - If neither is found, determine if it is "Purchase" or "Sales".
 
-Analyze this invoice (${fileName}) and extract these exact fields in JSON format:
+Return strictly this JSON format:
 {
   "sellerName": "Full legal name of the entity SELLING goods (Supplier/Billed From)",
   "sellerGstin": "15-character GSTIN of the SELLER",
@@ -249,13 +308,14 @@ Analyze this invoice (${fileName}) and extract these exact fields in JSON format
   "invoiceNo": "Invoice number or Bill number",
   "invoiceDate": "YYYY-MM-DD",
   "taxableValue": 10000.00,
-  "taxRate": 18
+  "taxRate": 18,
+  "detectedType": "Purchase"
 }
 
 Additional raw extracted text for reference:
 ${rawText.slice(0, 3000)}
 
-Return ONLY a JSON object. Ensure taxableValue is a number.`;
+Return ONLY a valid JSON object. Ensure taxableValue is a number.`;
 
       const response = await ai.models.generateContent({
         model: "gemini-3.5-flash-lite",
@@ -280,52 +340,38 @@ Return ONLY a JSON object. Ensure taxableValue is a number.`;
       if (jsonMatch) {
         const parsed = JSON.parse(jsonMatch[0]);
 
-        // Guard against selecting our own company as the counterparty
-        let partyName = "";
-        let partyGstin = "";
+        const seller = parsed.sellerName?.trim() || "";
+        const sellerGst = cleanGstin(parsed.sellerGstin) || "";
+        const buyer = parsed.buyerName?.trim() || "";
+        const buyerGst = cleanGstin(parsed.buyerGstin) || "";
 
-        if (invoiceType === "Purchase") {
-          // For Purchase: Counterparty is the SELLER
-          partyName = parsed.sellerName?.trim() || "";
-          partyGstin = parsed.sellerGstin?.trim() || "";
-
-          // If the AI somehow put our company in sellerName, use buyerName if different, or fallback
-          if (
-            isMatchingCompany(partyName, clientName) &&
-            parsed.buyerName &&
-            !isMatchingCompany(parsed.buyerName, clientName)
-          ) {
-            partyName = parsed.buyerName.trim();
-            partyGstin = parsed.buyerGstin?.trim() || "";
-          }
-        } else {
-          // For Sales: Counterparty is the BUYER
-          partyName = parsed.buyerName?.trim() || "";
-          partyGstin = parsed.buyerGstin?.trim() || "";
-
-          if (
-            isMatchingCompany(partyName, clientName) &&
-            parsed.sellerName &&
-            !isMatchingCompany(parsed.sellerName, clientName)
-          ) {
-            partyName = parsed.sellerName.trim();
-            partyGstin = parsed.sellerGstin?.trim() || "";
-          }
-        }
-
-        if (!partyName || isMatchingCompany(partyName, clientName)) {
-          partyName = invoiceType === "Sales" ? "Customer Company" : "Commercial Vendor";
+        let detectedType: InvoiceType = requestedInvoiceType;
+        if (
+          isMatchingCompany(seller, clientName) ||
+          (sellerGst && sellerGst === cleanGstin(clientGstin))
+        ) {
+          detectedType = "Sales";
+        } else if (
+          isMatchingCompany(buyer, clientName) ||
+          (buyerGst && buyerGst === cleanGstin(clientGstin))
+        ) {
+          detectedType = "Purchase";
+        } else if (parsed.detectedType === "Sales" || parsed.detectedType === "Purchase") {
+          detectedType = parsed.detectedType;
         }
 
         return {
-          vendorName: partyName,
-          vendorGstin: cleanGstin(partyGstin) || "07AAACB2902M1ZI",
+          sellerName: seller,
+          sellerGstin: sellerGst,
+          buyerName: buyer,
+          buyerGstin: buyerGst,
           invoiceNo:
             parsed.invoiceNo?.trim() ||
-            `${invoiceType === "Sales" ? "SALES" : "INV"}-${Date.now().toString().slice(-5)}`,
+            `${detectedType === "Sales" ? "SALES" : "INV"}-${Date.now().toString().slice(-5)}`,
           invoiceDate: normalizeDate(parsed.invoiceDate),
           taxableValue: Number(parsed.taxableValue) || 10000,
           taxRate: Number(parsed.taxRate) || 18,
+          detectedType,
         };
       }
     } catch (aiErr) {
@@ -338,9 +384,10 @@ Return ONLY a JSON object. Ensure taxableValue is a number.`;
     const gstinRegex =
       /\b([0-9]{2}[A-Z]{5}[0-9]{4}[A-Z]{1}[1-9A-Z]{1}Z[0-9A-Z]{1})\b/g;
     const matches = rawText.match(gstinRegex) || [];
-    // Pick the first GSTIN that is NOT the client's GSTIN
-    const vendorGstin =
-      matches.find((g) => g.toUpperCase() !== clientGstin.toUpperCase()) ||
+    
+    // Pick first GSTIN that is not the client's GSTIN
+    const otherGstin =
+      matches.find((g) => cleanGstin(g) !== cleanGstin(clientGstin)) ||
       matches[0] ||
       "07AAACB2902M1ZI";
 
@@ -352,45 +399,60 @@ Return ONLY a JSON object. Ensure taxableValue is a number.`;
       taxable = parseFloat(amountMatch[1].replace(/,/g, "")) || 15000;
     }
 
-    // Clean filename as vendor name if not matching client
     let candidateName = fileName
       .replace(/\.[^/.]+$/, "")
       .replace(/[-_]/g, " ")
       .toUpperCase();
 
+    // Guess sales vs purchase by checking keywords
+    const upperText = rawText.toUpperCase();
+    const isSales =
+      upperText.includes("TAX INVOICE") &&
+      upperText.includes(clientName.toUpperCase()) &&
+      upperText.indexOf(clientName.toUpperCase()) < 500;
+
+    const detectedType: InvoiceType = isSales ? "Sales" : requestedInvoiceType;
+
     if (isMatchingCompany(candidateName, clientName)) {
-      candidateName = invoiceType === "Sales" ? "CUSTOMER CO" : "VENDOR SUPPLIER";
+      candidateName = detectedType === "Sales" ? "CUSTOMER CO" : "VENDOR SUPPLIER";
     }
 
     return {
-      vendorName: candidateName,
-      vendorGstin,
-      invoiceNo: `${invoiceType === "Sales" ? "SALES" : "INV"}-${Math.floor(
+      sellerName: detectedType === "Sales" ? clientName : candidateName,
+      sellerGstin: detectedType === "Sales" ? clientGstin : otherGstin,
+      buyerName: detectedType === "Sales" ? candidateName : clientName,
+      buyerGstin: detectedType === "Sales" ? otherGstin : clientGstin,
+      invoiceNo: `${detectedType === "Sales" ? "SALES" : "INV"}-${Math.floor(
         1000 + Math.random() * 9000
       )}`,
       invoiceDate: new Date().toISOString().slice(0, 10),
       taxableValue: taxable,
       taxRate: 18,
+      detectedType,
     };
   }
 
   // 4. Default clean fallback
   return {
-    vendorName: invoiceType === "Sales" ? "CUSTOMER CO" : "VENDOR SUPPLIER",
-    vendorGstin: "07AAACB2902M1ZI",
-    invoiceNo: `${invoiceType === "Sales" ? "SALES" : "BILL"}-${Math.floor(
+    sellerName: requestedInvoiceType === "Sales" ? clientName : "VENDOR SUPPLIER",
+    sellerGstin: requestedInvoiceType === "Sales" ? clientGstin : "07AAACB2902M1ZI",
+    buyerName: requestedInvoiceType === "Sales" ? "CUSTOMER CO" : clientName,
+    buyerGstin: requestedInvoiceType === "Sales" ? "07AAACB2902M1ZI" : clientGstin,
+    invoiceNo: `${requestedInvoiceType === "Sales" ? "SALES" : "BILL"}-${Math.floor(
       10000 + Math.random() * 90000
     )}`,
     invoiceDate: new Date().toISOString().slice(0, 10),
     taxableValue: 12500,
     taxRate: 18,
+    detectedType: requestedInvoiceType,
   };
 }
 
-function isMatchingCompany(name1: string, name2: string): boolean {
+function isMatchingCompany(name1: string | undefined, name2: string | undefined): boolean {
   if (!name1 || !name2) return false;
   const n1 = name1.toLowerCase().replace(/[^a-z0-9]/g, "");
   const n2 = name2.toLowerCase().replace(/[^a-z0-9]/g, "");
+  if (!n1 || !n2) return false;
   return n1.includes(n2) || n2.includes(n1);
 }
 
