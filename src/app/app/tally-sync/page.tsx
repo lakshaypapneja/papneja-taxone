@@ -23,7 +23,7 @@ export default function TallySyncBridgePage() {
   const [syncLogs, setSyncLogs] = useState<string[]>([
     "[14:30:12] Bridge initialized on 127.0.0.1:9000",
     "[14:30:15] Handshake successful with Tally Prime 4.1 Release (Build 128)",
-    "[14:31:02] Active Tally Company verified: 'Apex Logistics India Pvt Ltd'",
+    "[14:31:02] Active Tally Company verified: 'PrimeX Trading'",
     "[14:32:00] Standing by for incoming voucher queues...",
   ]);
 
@@ -109,7 +109,7 @@ export default function TallySyncBridgePage() {
               </div>
               <div className="flex justify-between p-2.5 rounded-lg bg-slate-50 border border-slate-100">
                 <span className="text-slate-500 font-sans">Target Company:</span>
-                <span className="font-bold text-slate-800 font-sans">Apex Logistics India Pvt Ltd</span>
+                <span className="font-bold text-slate-800 font-sans">PrimeX Trading</span>
               </div>
               <div className="flex justify-between p-2.5 rounded-lg bg-slate-50 border border-slate-100">
                 <span className="text-slate-500 font-sans">Protocol:</span>

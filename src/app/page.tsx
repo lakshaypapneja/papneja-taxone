@@ -95,7 +95,7 @@ export default function Home() {
                 <div className="py-4 space-y-3 font-mono text-xs">
                   <div className="text-slate-400 flex items-center justify-between">
                     <span>Target Client:</span>
-                    <span className="text-brand-300 font-sans font-medium">Apex Logistics India Pvt Ltd</span>
+                    <span className="text-brand-300 font-sans font-medium">PrimeX Trading</span>
                   </div>
                   <div className="text-slate-400 flex items-center justify-between">
                     <span>Accounting Software:</span>

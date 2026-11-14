@@ -118,7 +118,7 @@ export default function BankingAutomationPage() {
       };
     });
 
-    const xml = generateTallyPrimeXML("Apex Logistics India Pvt Ltd", vouchers);
+    const xml = generateTallyPrimeXML("PrimeX Trading", vouchers);
     setGeneratedXml(xml);
     setShowXmlModal(true);
   };
@@ -143,7 +143,7 @@ export default function BankingAutomationPage() {
     setTimeout(() => {
       setIsSyncing(false);
       setSyncSuccessMessage(
-        `Successfully pushed ${selectedIds.length} vouchers to Tally Prime on localhost:9000! Company: Apex Logistics India Pvt Ltd.`
+        `Successfully pushed ${selectedIds.length} vouchers to Tally Prime on localhost:9000! Company: PrimeX Trading.`
       );
     }, 1500);
   };

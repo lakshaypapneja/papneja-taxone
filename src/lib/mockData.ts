@@ -12,10 +12,10 @@ export interface ClientCompany {
 export const mockClients: ClientCompany[] = [
   {
     id: "c1",
-    name: "Apex Logistics India Pvt Ltd",
+    name: "PrimeX Trading",
     gstin: "07AABCA1234F1Z8",
     pan: "AABCA1234F",
-    tallyCompany: "Apex Logistics Ltd (2026-27)",
+    tallyCompany: "PrimeX Trading (2026-27)",
     financialYear: "2026-2027",
     pendingTransactions: 24,
     reconciliationStatus: "Mismatches Found",

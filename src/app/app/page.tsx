@@ -32,7 +32,7 @@ export default function DashboardPage() {
           </span>
           <h1 className="text-2xl font-bold mt-2">Welcome, CA Lakshay Papneja</h1>
           <p className="text-xs text-slate-300 mt-1">
-            Active Client: <strong>Apex Logistics India Pvt Ltd</strong> &bull; Tally Prime connected on localhost:9000
+            Active Client: <strong>PrimeX Trading</strong> &bull; Tally Prime connected on localhost:9000
           </p>
         </div>
         <div className="flex gap-3">
