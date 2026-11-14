@@ -173,6 +173,20 @@ export default function InvoicesOCRPage() {
     }
   };
 
+  // Helper to generate a unique, non-colliding file name on every download
+  const generateUniqueFileName = (type: string, isMasters: boolean = false) => {
+    const now = new Date();
+    const dateStr = now.toISOString().slice(0, 10).replace(/-/g, "");
+    const timeStr = [
+      String(now.getHours()).padStart(2, "0"),
+      String(now.getMinutes()).padStart(2, "0"),
+      String(now.getSeconds()).padStart(2, "0"),
+    ].join("");
+    const randomTag = Math.random().toString(36).substring(2, 6).toUpperCase();
+    const masterLabel = isMasters ? "Masters_" : "";
+    return `Papneja_Tally_${type}_${masterLabel}${currentInvoices.length}Bills_${dateStr}_${timeStr}_${randomTag}.xml`;
+  };
+
   // Download Tally XML file (Unified Vouchers + Auto-Created Ledgers)
   const handleDownloadXml = () => {
     if (currentInvoices.length === 0) return;
@@ -186,7 +200,7 @@ export default function InvoicesOCRPage() {
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
-    a.download = `Papneja_Tally_${activeTab}_Invoices_${new Date().toISOString().slice(0, 10)}.xml`;
+    a.download = generateUniqueFileName(activeTab, false);
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
@@ -205,7 +219,7 @@ export default function InvoicesOCRPage() {
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
-    a.download = `Papneja_Tally_${activeTab}_Masters_${new Date().toISOString().slice(0, 10)}.xml`;
+    a.download = generateUniqueFileName(activeTab, true);
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
