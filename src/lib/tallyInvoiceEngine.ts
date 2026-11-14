@@ -426,17 +426,27 @@ export function buildBatchTallyPurchaseXml(
         <TALLYMESSAGE xmlns:UDF="TallyUDF">
           <VOUCHER VCHTYPE="${voucherTypeName}" ACTION="Create" OBJVIEW="Accounting Voucher View">
             <DATE>${tallyDate}</DATE>
+            <EFFECTIVEDATE>${tallyDate}</EFFECTIVEDATE>
             <VOUCHERTYPENAME>${voucherTypeName}</VOUCHERTYPENAME>
             <VOUCHERNUMBER>${cleanInvNo}</VOUCHERNUMBER>
             <REFERENCE>${cleanInvNo}</REFERENCE>
             <REFERENCEDATE>${tallyDate}</REFERENCEDATE>
             <PARTYLEDGERNAME>${cleanParty}</PARTYLEDGERNAME>
+            <PERSISTEDVIEW>Accounting Voucher View</PERSISTEDVIEW>
             <NARRATION>${cleanNarration}</NARRATION>
             ${ledgerEntriesXml}
           </VOUCHER>
         </TALLYMESSAGE>`;
     })
     .join("\n");
+
+  const staticVariablesXml =
+    companyName && companyName.trim() !== ""
+      ? `
+        <STATICVARIABLES>
+          <SVCURRENTCOMPANY>${escapeXml(companyName)}</SVCURRENTCOMPANY>
+        </STATICVARIABLES>`
+      : "";
 
   return `<?xml version="1.0" encoding="utf-8"?>
 <ENVELOPE>
@@ -446,10 +456,7 @@ export function buildBatchTallyPurchaseXml(
   <BODY>
     <IMPORTDATA>
       <REQUESTDESC>
-        <REPORTNAME>Vouchers</REPORTNAME>
-        <STATICVARIABLES>
-          <SVCURRENTCOMPANY>${escapeXml(companyName)}</SVCURRENTCOMPANY>
-        </STATICVARIABLES>
+        <REPORTNAME>Vouchers</REPORTNAME>${staticVariablesXml}
       </REQUESTDESC>
       <REQUESTDATA>
         ${ledgersXml}
