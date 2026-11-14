@@ -23,7 +23,8 @@ import {
   Archive,
   FolderArchive,
   Edit3,
-  Check
+  Check,
+  Sparkles
 } from "lucide-react";
 import {
   ParsedInvoice,
@@ -37,12 +38,48 @@ export default function InvoicesOCRPage() {
   // Toggle between Purchase and Sales
   const [activeTab, setActiveTab] = useState<InvoiceType>("Purchase");
 
-  // Client Company Details (e.g. PrimeX Trading Firm)
-  const [companyName, setCompanyName] = useState<string>("PrimeX Trading Firm");
-  const [companyGstin, setCompanyGstin] = useState<string>("07AABCP1234F1Z5");
+  // Client Company Details (PrimeX Trading, Haryana)
+  const [companyName, setCompanyName] = useState<string>("PRIMEX TRADING");
+  const [companyGstin, setCompanyGstin] = useState<string>("06GVZPS9712P1Z3");
   const [isEditingCompany, setIsEditingCompany] = useState<boolean>(false);
-  const [tempCompanyName, setTempCompanyName] = useState<string>("PrimeX Trading Firm");
-  const [tempCompanyGstin, setTempCompanyGstin] = useState<string>("07AABCP1234F1Z5");
+  const [tempCompanyName, setTempCompanyName] = useState<string>("PRIMEX TRADING");
+  const [tempCompanyGstin, setTempCompanyGstin] = useState<string>("06GVZPS9712P1Z3");
+
+  // Load sample BNEW Mobiles verified bill for instant demo
+  const handleLoadBnewSample = () => {
+    const sampleInv: ParsedInvoice = {
+      id: `inv-bnew-${Date.now()}`,
+      fileName: "BNEW_Mobiles_GSTMDP_1456.pdf",
+      type: "Purchase",
+      vendorName: "BNEW MOBILES PVT LTD (2026-2027)",
+      vendorGstin: "36AAGCB0024N1ZT",
+      buyerName: "PRIMEX TRADING",
+      buyerGstin: "06GVZPS9712P1Z3",
+      invoiceNo: "GSTMDP/B/1456",
+      invoiceDate: "2026-10-05",
+      taxableValue: 1949152.54,
+      taxRate: 18,
+      cgst: 0,
+      sgst: 0,
+      igst: 350847.46,
+      roundOff: 0,
+      totalAmount: 2300000.0,
+      isInterstate: true,
+      supplierState: "Telangana",
+      buyerState: "Haryana",
+      ledgers: {
+        vendorLedger: "BNEW MOBILES PVT LTD (2026-2027)",
+        purchaseLedger: "Purchase - Interstate @ 18%",
+        igstLedger: "Input IGST @ 18%",
+      },
+      status: "Matched",
+    };
+    setActiveTab("Purchase");
+    setInvoices((prev) => [sampleInv, ...prev.filter((i) => i.invoiceNo !== "GSTMDP/B/1456")]);
+    setPushStatusMessage(
+      "Loaded verified BNEW Mobiles purchase invoice (₹23,00,000)! Ready to inspect or export to Tally Prime."
+    );
+  };
 
   // Empty initial queues
   const [invoices, setInvoices] = useState<ParsedInvoice[]>([]);
@@ -327,8 +364,10 @@ export default function InvoicesOCRPage() {
       <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 bg-white p-6 rounded-2xl border border-slate-200 shadow-sm">
         <div className="space-y-2">
           <div className="flex flex-wrap items-center gap-3">
-            <h1 className="text-2xl font-bold text-slate-900 tracking-tight">
-              {activeTab === "Purchase" ? "Purchase Invoice" : "Sales Invoice"} Automation • Tally Integration
+            <h1 className="text-2xl font-black text-slate-900 tracking-tight flex items-center gap-2">
+              <span>Papneja Associates</span>
+              <span className="text-blue-600">×</span>
+              <span>PrimeX Trading</span>
             </h1>
 
             {/* Editable Company Badge */}
@@ -346,11 +385,11 @@ export default function InvoicesOCRPage() {
                   value={tempCompanyGstin}
                   onChange={(e) => setTempCompanyGstin(e.target.value)}
                   placeholder="15-digit GSTIN"
-                  className="px-2 py-1 text-xs font-mono border border-blue-200 rounded-lg text-slate-900 bg-white w-32"
+                  className="px-2 py-1 text-xs font-mono border border-blue-200 rounded-lg text-slate-900 bg-white w-36 uppercase"
                 />
                 <button
                   onClick={handleSaveCompany}
-                  className="px-2 py-1 bg-blue-600 text-white rounded-lg text-xs font-bold flex items-center gap-1 hover:bg-blue-700"
+                  className="px-2.5 py-1 bg-blue-600 text-white rounded-lg text-xs font-bold flex items-center gap-1 hover:bg-blue-700"
                 >
                   <Check className="w-3.5 h-3.5" />
                   <span>Save</span>
@@ -363,11 +402,11 @@ export default function InvoicesOCRPage() {
                   setTempCompanyGstin(companyGstin);
                   setIsEditingCompany(true);
                 }}
-                title="Click to edit your company name as named in Tally Prime"
+                title="Click to edit company details as registered in Tally Prime"
                 className="group flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-semibold bg-blue-50 text-blue-700 border border-blue-200 hover:border-blue-400 hover:bg-blue-100 transition-all"
               >
                 <Building2 className="w-3.5 h-3.5 text-blue-600" />
-                <span>My Firm: <strong>{companyName}</strong> ({companyGstin})</span>
+                <span>Firm: <strong>{companyName}</strong> ({companyGstin} • Haryana)</span>
                 <Edit3 className="w-3 h-3 text-blue-400 group-hover:text-blue-700" />
               </button>
             )}
@@ -379,19 +418,28 @@ export default function InvoicesOCRPage() {
 
           <p className="text-sm text-slate-500">
             {activeTab === "Purchase"
-              ? `Extracts third-party vendors selling to "${companyName}", calculates GST splits, and records purchase vouchers.`
-              : `Extracts customers buying from "${companyName}", calculates output GST, and records sales vouchers.`}
+              ? `Extracts third-party suppliers selling to ${companyName}, calculates Input IGST/CGST, and compiles balanced purchase vouchers.`
+              : `Extracts customers purchasing from ${companyName}, calculates Output GST, and compiles balanced sales vouchers.`}
           </p>
         </div>
 
-        <div className="flex items-center gap-3 self-stretch sm:self-auto">
+        <div className="flex items-center gap-2 self-stretch sm:self-auto flex-wrap">
+          <button
+            onClick={handleLoadBnewSample}
+            className="flex items-center gap-1.5 px-3.5 py-2.5 rounded-xl bg-purple-50 hover:bg-purple-100 border border-purple-200 text-purple-700 text-xs font-bold transition-all shadow-sm"
+            title="Load sample BNEW Mobiles verified bill (₹23,00,000) for instant demo"
+          >
+            <Sparkles className="w-3.5 h-3.5 text-purple-600" />
+            <span>Load BNEW Bill (Demo)</span>
+          </button>
+
           {currentInvoices.length > 0 && (
             <>
               <button
                 onClick={handleClearAll}
-                className="px-3.5 py-2.5 text-xs font-medium text-slate-600 hover:text-rose-600 hover:bg-rose-50 rounded-xl border border-slate-200 transition-colors"
+                className="px-3 py-2.5 text-xs font-medium text-slate-600 hover:text-rose-600 hover:bg-rose-50 rounded-xl border border-slate-200 transition-colors"
               >
-                Clear Queue
+                Clear
               </button>
               <button
                 onClick={handleDownloadMastersXml}
@@ -399,7 +447,7 @@ export default function InvoicesOCRPage() {
                 className="flex items-center gap-1.5 px-3 py-2.5 rounded-xl border border-slate-200 text-slate-600 hover:bg-slate-50 text-xs font-semibold shadow-sm transition-all"
               >
                 <Download className="w-3.5 h-3.5 text-slate-500" />
-                <span>Masters XML</span>
+                <span>Masters</span>
               </button>
               <button
                 onClick={handleDownloadXml}
@@ -407,7 +455,7 @@ export default function InvoicesOCRPage() {
                 className="flex items-center gap-2 px-4 py-2.5 rounded-xl border border-emerald-300 bg-emerald-50 text-emerald-800 hover:bg-emerald-100 text-sm font-semibold shadow-sm transition-all"
               >
                 <Download className="w-4 h-4 text-emerald-600" />
-                <span>Download Single Combined XML ({currentInvoices.length} Bills)</span>
+                <span>Download Tally XML ({currentInvoices.length})</span>
               </button>
               <button
                 onClick={handlePushAllToTally}
@@ -417,12 +465,12 @@ export default function InvoicesOCRPage() {
                 {isPushingToTally ? (
                   <>
                     <RefreshCw className="w-4 h-4 animate-spin" />
-                    <span>Pushing to Port 9000...</span>
+                    <span>Pushing...</span>
                   </>
                 ) : (
                   <>
                     <Send className="w-4 h-4" />
-                    <span>Push {currentInvoices.length} to Tally Prime</span>
+                    <span>Push {currentInvoices.length} to Tally</span>
                   </>
                 )}
               </button>
