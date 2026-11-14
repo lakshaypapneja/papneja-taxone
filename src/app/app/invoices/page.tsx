@@ -276,11 +276,11 @@ export default function InvoicesOCRPage() {
               </button>
               <button
                 onClick={handleDownloadXml}
-                title="Download Complete XML (Vouchers with Auto-Ledger Creation) to import via Tally Prime > Import > Transactions"
+                title="Consolidates all uploaded PDFs & JPEGs into 1 single XML file for 1-click import into Tally Prime"
                 className="flex items-center gap-2 px-4 py-2.5 rounded-xl border border-emerald-300 bg-emerald-50 text-emerald-800 hover:bg-emerald-100 text-sm font-semibold shadow-sm transition-all"
               >
                 <Download className="w-4 h-4 text-emerald-600" />
-                <span>Download Tally XML ({currentInvoices.length})</span>
+                <span>Download Single Combined XML ({currentInvoices.length} Bills)</span>
               </button>
               <button
                 onClick={handlePushAllToTally}
