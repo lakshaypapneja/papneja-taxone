@@ -13,12 +13,12 @@ export const mockClients: ClientCompany[] = [
   {
     id: "c1",
     name: "PrimeX Trading",
-    gstin: "07AABCA1234F1Z8",
-    pan: "AABCA1234F",
-    tallyCompany: "PrimeX Trading (2026-27)",
+    gstin: "06GVZPS9712P1Z3",
+    pan: "GVZPS9712P",
+    tallyCompany: "PRIMEX TRADING",
     financialYear: "2026-2027",
-    pendingTransactions: 24,
-    reconciliationStatus: "Mismatches Found",
+    pendingTransactions: 20,
+    reconciliationStatus: "Reconciled",
   },
   {
     id: "c2",

@@ -43,15 +43,15 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
         
         {/* Brand Header */}
         <div className="h-16 flex items-center px-5 gap-3 border-b border-slate-800 bg-slate-950">
-          <div className="w-9 h-9 rounded-lg bg-brand-600 flex items-center justify-center text-white shadow">
-            <Building2 className="w-5 h-5" />
+          <div className="w-9 h-9 rounded-lg bg-blue-600 flex items-center justify-center text-white shadow font-bold text-xs tracking-wider">
+            PX
           </div>
           <div className="overflow-hidden">
             <span className="font-extrabold text-sm tracking-tight text-white block truncate">
-              PAPNEJA TAXONE
+              PAPNEJA × PRIMEX
             </span>
-            <span className="text-[10px] text-slate-400 uppercase tracking-wider block">
-              CA &bull; Practice Portal
+            <span className="text-[10px] text-blue-400 font-semibold uppercase tracking-wider block">
+              Enterprise Tax &amp; Tally Suite
             </span>
           </div>
         </div>
