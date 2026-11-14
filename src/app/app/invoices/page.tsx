@@ -19,7 +19,9 @@ import {
   FileSpreadsheet,
   ShoppingCart,
   TrendingUp,
-  Receipt
+  Receipt,
+  Archive,
+  FolderArchive
 } from "lucide-react";
 import {
   ParsedInvoice,
@@ -350,12 +352,12 @@ export default function InvoicesOCRPage() {
           ref={fileInputRef}
           type="file"
           multiple
-          accept=".pdf,.png,.jpg,.jpeg,.webp"
+          accept=".pdf,.png,.jpg,.jpeg,.webp,.zip"
           onChange={handleFileInputChange}
           className="hidden"
         />
 
-        <div className="flex flex-col items-center justify-center max-w-md mx-auto space-y-4">
+        <div className="flex flex-col items-center justify-center max-w-lg mx-auto space-y-4">
           <div
             className={`w-16 h-16 rounded-2xl flex items-center justify-center transition-transform ${
               isDragging
@@ -377,11 +379,11 @@ export default function InvoicesOCRPage() {
           <div>
             <h3 className="text-lg font-bold text-slate-800">
               {isProcessing
-                ? `Extracting ${activeTab} Invoices with Multimodal AI...`
-                : `Drop your real ${activeTab} invoices here or browse files`}
+                ? `Unpacking & Extracting ${activeTab} Invoices with AI...`
+                : `Drop your real ${activeTab} invoices or a ZIP archive here`}
             </h3>
             <p className="text-xs text-slate-500 mt-1">
-              Supports real PDF, JPG, PNG, WEBP. Upload 5, 10, or 20 bills at once.
+              Supports real <strong>PDF, JPG, PNG, WEBP</strong>, and <strong>.ZIP archives</strong> (auto-extracts and converts 20, 50, or 100+ bills into one XML).
             </p>
           </div>
 
@@ -398,12 +400,12 @@ export default function InvoicesOCRPage() {
             {isProcessing ? (
               <>
                 <RefreshCw className="w-4 h-4 animate-spin" />
-                <span>Reading invoices...</span>
+                <span>Unpacking & reading invoices...</span>
               </>
             ) : (
               <>
-                <FileCheck className="w-4 h-4" />
-                <span>Choose {activeTab} Files from Computer</span>
+                <FolderArchive className="w-4 h-4" />
+                <span>Choose Invoices or ZIP File from Computer</span>
               </>
             )}
           </button>

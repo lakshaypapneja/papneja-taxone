@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { determineGstLedgers, ParsedInvoice, InvoiceType } from "@/lib/tallyInvoiceEngine";
 import { GoogleGenAI } from "@google/genai";
+import JSZip from "jszip";
 
 // Dynamic require for pdf-parse in Next.js server runtime
 const getPdfParse = () => {
@@ -11,17 +12,92 @@ const getPdfParse = () => {
   }
 };
 
+interface FileEntry {
+  name: string;
+  mimeType: string;
+  buffer: Buffer;
+}
+
 export async function POST(req: NextRequest) {
   try {
     const formData = await req.formData();
-    const files = formData.getAll("files") as File[];
+    const rawFiles = formData.getAll("files") as File[];
     const invoiceType = (formData.get("invoiceType") as InvoiceType) || "Purchase";
     const clientGstin = (formData.get("buyerGstin") as string) || "07AABCA1234F1Z8"; // Default: Delhi
     const clientName = (formData.get("buyerName") as string) || "Apex Logistics India Pvt Ltd";
 
-    if (!files || files.length === 0) {
+    if (!rawFiles || rawFiles.length === 0) {
       return NextResponse.json(
         { success: false, error: "No files uploaded" },
+        { status: 400 }
+      );
+    }
+
+    // 1. Unpack files & ZIP archives into a unified list of file entries
+    const fileEntries: FileEntry[] = [];
+
+    for (let i = 0; i < rawFiles.length; i++) {
+      const file = rawFiles[i];
+      const fileName = file.name;
+      const buffer = Buffer.from(await file.arrayBuffer());
+
+      if (fileName.toLowerCase().endsWith(".zip") || file.type.includes("zip")) {
+        try {
+          const zip = await JSZip.loadAsync(buffer);
+          const entries = Object.keys(zip.files);
+
+          for (const relativePath of entries) {
+            const zipEntry = zip.files[relativePath];
+            if (zipEntry.dir) continue;
+            if (
+              relativePath.includes("__MACOSX") ||
+              relativePath.startsWith(".") ||
+              relativePath.includes("/.")
+            ) {
+              continue;
+            }
+
+            const lower = relativePath.toLowerCase();
+            if (
+              lower.endsWith(".pdf") ||
+              lower.endsWith(".png") ||
+              lower.endsWith(".jpg") ||
+              lower.endsWith(".jpeg") ||
+              lower.endsWith(".webp")
+            ) {
+              const entryBuffer = await zipEntry.async("nodebuffer");
+              const mimeType = lower.endsWith(".pdf")
+                ? "application/pdf"
+                : lower.endsWith(".png")
+                ? "image/png"
+                : "image/jpeg";
+              const simpleName = relativePath.split("/").pop() || relativePath;
+
+              fileEntries.push({
+                name: simpleName,
+                mimeType,
+                buffer: entryBuffer,
+              });
+            }
+          }
+        } catch (zipErr: any) {
+          console.warn("Failed to unpack ZIP file:", zipErr);
+        }
+      } else {
+        fileEntries.push({
+          name: fileName,
+          mimeType: file.type || "application/pdf",
+          buffer,
+        });
+      }
+    }
+
+    if (fileEntries.length === 0) {
+      return NextResponse.json(
+        {
+          success: false,
+          error: "No valid invoice PDFs or images found in the uploaded file/ZIP",
+        },
         { status: 400 }
       );
     }
@@ -29,16 +105,18 @@ export async function POST(req: NextRequest) {
     const processedInvoices: ParsedInvoice[] = [];
     const apiKey = process.env.GEMINI_API_KEY || "";
 
-    for (let i = 0; i < files.length; i++) {
-      const file = files[i];
-      const fileName = file.name;
-      const buffer = Buffer.from(await file.arrayBuffer());
-
-      let extracted = await extractWithRealEngines(file, buffer, apiKey, invoiceType);
+    // 2. Process all extracted invoice files (from ZIP or direct upload)
+    for (let i = 0; i < fileEntries.length; i++) {
+      const entry = fileEntries[i];
+      let extracted = await extractWithRealEngines(
+        entry.name,
+        entry.mimeType,
+        entry.buffer,
+        apiKey,
+        invoiceType
+      );
 
       // Determine GST Ledgers & double-entry balances
-      // For Purchase: vendorGstin = Supplier, clientGstin = Buyer
-      // For Sales: vendorGstin = Customer (Party), clientGstin = Seller (Company)
       const gstDetails = determineGstLedgers(
         extracted.vendorGstin,
         clientGstin,
@@ -49,7 +127,7 @@ export async function POST(req: NextRequest) {
 
       const parsed: ParsedInvoice = {
         id: `inv-${Date.now()}-${i}-${Math.random().toString(36).substring(2, 7)}`,
-        fileName,
+        fileName: entry.name,
         type: invoiceType,
         vendorName: extracted.vendorName,
         vendorGstin: extracted.vendorGstin,
@@ -96,16 +174,16 @@ export async function POST(req: NextRequest) {
 }
 
 async function extractWithRealEngines(
-  file: File,
+  fileName: string,
+  mimeType: string,
   buffer: Buffer,
   apiKey: string,
   invoiceType: InvoiceType
 ) {
-  const fileName = file.name;
   let rawText = "";
 
   // 1. If it's a PDF, extract raw text first
-  if (file.type === "application/pdf" || fileName.toLowerCase().endsWith(".pdf")) {
+  if (mimeType === "application/pdf" || fileName.toLowerCase().endsWith(".pdf")) {
     try {
       const pdfParser = getPdfParse();
       if (pdfParser) {
@@ -121,19 +199,28 @@ async function extractWithRealEngines(
   if (apiKey) {
     try {
       const ai = new GoogleGenAI({ apiKey });
-      const mimeType = file.type || (fileName.toLowerCase().endsWith(".pdf") ? "application/pdf" : "image/jpeg");
+      const actualMime =
+        mimeType ||
+        (fileName.toLowerCase().endsWith(".pdf") ? "application/pdf" : "image/jpeg");
       const base64Data = buffer.toString("base64");
 
-      const promptRole = invoiceType === "Sales"
-        ? "This is an Indian SALES invoice issued to a client/customer. Extract the CUSTOMER's legal name and CUSTOMER's GSTIN."
-        : "This is an Indian PURCHASE invoice received from a vendor/supplier. Extract the SUPPLIER's legal name and SUPPLIER's GSTIN.";
+      const promptRole =
+        invoiceType === "Sales"
+          ? "This is an Indian SALES invoice issued to a client/customer. Extract the CUSTOMER's legal name and CUSTOMER's GSTIN."
+          : "This is an Indian PURCHASE invoice received from a vendor/supplier. Extract the SUPPLIER's legal name and SUPPLIER's GSTIN.";
 
       const prompt = `You are an expert Indian GST & Tax Accounting OCR system.
 ${promptRole}
 Analyze this invoice (${fileName}) and extract these exact fields in JSON format:
 {
-  "vendorName": "${invoiceType === "Sales" ? "Customer or Buyer company name" : "Supplier or Vendor company name"}",
-  "vendorGstin": "15-character Indian GSTIN of ${invoiceType === "Sales" ? "the customer/buyer" : "the supplier"}",
+  "vendorName": "${
+    invoiceType === "Sales"
+      ? "Customer or Buyer company name"
+      : "Supplier or Vendor company name"
+  }",
+  "vendorGstin": "15-character Indian GSTIN of ${
+    invoiceType === "Sales" ? "the customer/buyer" : "the supplier"
+  }",
   "invoiceNo": "Invoice number / Bill number",
   "invoiceDate": "YYYY-MM-DD",
   "taxableValue": 10000.00,
@@ -154,7 +241,7 @@ Return ONLY a JSON object. Ensure taxableValue is a number.`;
               { text: prompt },
               {
                 inlineData: {
-                  mimeType,
+                  mimeType: actualMime,
                   data: base64Data,
                 },
               },
@@ -168,9 +255,13 @@ Return ONLY a JSON object. Ensure taxableValue is a number.`;
       if (jsonMatch) {
         const parsed = JSON.parse(jsonMatch[0]);
         return {
-          vendorName: parsed.vendorName?.trim() || (invoiceType === "Sales" ? "Client Customer" : "Commercial Supplier"),
+          vendorName:
+            parsed.vendorName?.trim() ||
+            (invoiceType === "Sales" ? "Client Customer" : "Commercial Supplier"),
           vendorGstin: cleanGstin(parsed.vendorGstin) || "07AAACB2902M1ZI",
-          invoiceNo: parsed.invoiceNo?.trim() || `${invoiceType === "Sales" ? "SALES" : "INV"}-${Date.now().toString().slice(-5)}`,
+          invoiceNo:
+            parsed.invoiceNo?.trim() ||
+            `${invoiceType === "Sales" ? "SALES" : "INV"}-${Date.now().toString().slice(-5)}`,
           invoiceDate: normalizeDate(parsed.invoiceDate),
           taxableValue: Number(parsed.taxableValue) || 10000,
           taxRate: Number(parsed.taxRate) || 18,
@@ -183,11 +274,13 @@ Return ONLY a JSON object. Ensure taxableValue is a number.`;
 
   // 3. Fallback: Parse regex from raw PDF text
   if (rawText.length > 20) {
-    const gstinRegex = /\b([0-9]{2}[A-Z]{5}[0-9]{4}[A-Z]{1}[1-9A-Z]{1}Z[0-9A-Z]{1})\b/g;
+    const gstinRegex =
+      /\b([0-9]{2}[A-Z]{5}[0-9]{4}[A-Z]{1}[1-9A-Z]{1}Z[0-9A-Z]{1})\b/g;
     const matches = rawText.match(gstinRegex);
     const vendorGstin = matches ? matches[0] : "07AAACB2902M1ZI";
 
-    const amountRegex = /(?:Total|Taxable|Amount|INR|Rs\.?)\s*[:]?\s*([0-9,]+\.[0-9]{2})/i;
+    const amountRegex =
+      /(?:Total|Taxable|Amount|INR|Rs\.?)\s*[:]?\s*([0-9,]+\.[0-9]{2})/i;
     const amountMatch = rawText.match(amountRegex);
     let taxable = 15000;
     if (amountMatch) {
@@ -195,9 +288,14 @@ Return ONLY a JSON object. Ensure taxableValue is a number.`;
     }
 
     return {
-      vendorName: fileName.replace(/\.[^/.]+$/, "").replace(/[-_]/g, " ").toUpperCase(),
+      vendorName: fileName
+        .replace(/\.[^/.]+$/, "")
+        .replace(/[-_]/g, " ")
+        .toUpperCase(),
       vendorGstin,
-      invoiceNo: `${invoiceType === "Sales" ? "SALES" : "INV"}-${Math.floor(1000 + Math.random() * 9000)}`,
+      invoiceNo: `${invoiceType === "Sales" ? "SALES" : "INV"}-${Math.floor(
+        1000 + Math.random() * 9000
+      )}`,
       invoiceDate: new Date().toISOString().slice(0, 10),
       taxableValue: taxable,
       taxRate: 18,
@@ -206,9 +304,14 @@ Return ONLY a JSON object. Ensure taxableValue is a number.`;
 
   // 4. Default clean fallback
   return {
-    vendorName: fileName.replace(/\.[^/.]+$/, "").replace(/[-_]/g, " ").toUpperCase(),
+    vendorName: fileName
+      .replace(/\.[^/.]+$/, "")
+      .replace(/[-_]/g, " ")
+      .toUpperCase(),
     vendorGstin: "07AAACB2902M1ZI",
-    invoiceNo: `${invoiceType === "Sales" ? "SALES" : "BILL"}-${Math.floor(10000 + Math.random() * 90000)}`,
+    invoiceNo: `${invoiceType === "Sales" ? "SALES" : "BILL"}-${Math.floor(
+      10000 + Math.random() * 90000
+    )}`,
     invoiceDate: new Date().toISOString().slice(0, 10),
     taxableValue: 12500,
     taxRate: 18,
